@@ -884,7 +884,176 @@ README かリリースノートに「BDAV は `bd_get_titles()` 経由で使う�
 
 ---
 
-## 7. 未確定事項 (実装前に詰める)
+## 7. AACS Recordable variant (録画用 AACS)
+
+§6.6.2 注意 3 で触れた「録画用 AACS」の詳細。AACS LA の仕様書
+(<https://aacsla.com/aacs-specifications/>) は公開されているので、
+一次資料で確認できる。
+
+### 7.1 仕様書の構成
+
+AACS LA は仕様を複数の Book に分冊している。
+
+| Book | Rev | 役割 |
+|---|---|---|
+| Introduction and Common Cryptographic Elements | 0.953 | 共通暗号要素 (AES-G / AES-H / CMAC / MKB 形式) |
+| Pre-recorded Video Book | 0.953 | 録画以外のコンテンツ |
+| **Recordable Video Book** | 0.953 | **録画用** (MKB 更新 / Title Key 再暗号化 / Binding Nonce) |
+| **Blu-ray Disc Recordable Video Book** | 0.921 | **BDAV/BDMV 固有**のファイル配置と暗号方式 |
+| Blu-ray Disc Pre-recorded Book | 0.953 | BDMV 用 (比較対象) |
+| Prepared Video Book / Signed CSS Book | 0.953 | その他 |
+
+### 7.2 BD Recordable Book の構成
+
+| 章 | 内容 |
+|---|---|
+| Ch2 | FORMAT OF CPS FOR BD RECORDABLE DISC |
+| 2.1 | **Media ID** — BCA (Burst Cutting Area) に記録。128 bit。Content Code `0000012` / Content Sub ID `00012` / Content Length `E16` / Disc Manufacturer Code / Serial Number |
+| 2.2 | **Binding Nonce** — Protected Area の User Control Data (CPS Unit Key File の先頭論理セクタ) に格納 |
+| 2.3 | **Bus Encryption Flag (BEF)** — User Control Data |
+| 2.4 | **Media Key Block** — `AACS/MKB_RW.inf` (BDAV 用) / `AACS_mv/MKB_RW_mv.inf` (BDMV 用) |
+| 2.5 | Backup of MKB — `AACS/BAK_MKB.inf` |
+| 2.6 | Partial MKB for Host Revocation List — Lead-in の "BD HRL Record" |
+| Ch3 | DETAILS FOR CONTENT ENCRYPTION AND DECRYPTION |
+| 3.1 | CPS Unit 構造 (BDMV / BDAV 両 application format) |
+| 3.2 | CPS Key File (`Unit_Key_RW.inf`) / CPS Usage File (`CPSUnitXXXXX.cci`) |
+| 3.3 | Encrypted Packs — **Aligned Unit** (32 source packet = 6144 byte) 単位。**先頭 16 byte が平文 (seed)、残り 6128 byte が AES-128-CBC**。Block Key = AES-128E(CPS Unit Key, seed) |
+| 3.4 | Embedded CCI |
+| Annex A | CCI の扱い — **Cognizant / Non-Cognizant** Recording & Playback |
+| Annex B | System Renewability Message |
+
+### 7.3 実ディスクのディレクトリ構造
+
+BD Recordable Book の図より (BDAV の場合):
+
+```
+Root
+  AACS/
+    AACS_av/
+      Unit_Key_RW.inf        ← CPS Unit Key File
+      CPSUnit00001.cci ...   ← CPS Unit Usage File
+    MKB_RW.inf
+  BDAV/
+    info.bdav
+    menu.tidx / menu.tdt1 / mark.tidx / mark.tdt1
+    PLAYLIST/00001.rpls
+```
+
+`bdpriv_aacs_required()` で追加した `AACS/MKB_RW.inf` の判定は
+この構成と一致している。`AACS_bd/` というネーミングは
+特定 recorder の実装差なので未確定 (§8 の Q8)。
+
+### 7.4 鍵導出 — prerecorded との差分 (要点)
+
+Recordable Video Book §3.2〜§3.4 が決定的な箇所。
+
+**録画用 (Recordable)**
+
+```
+1. Km  = MKB から計算            (prerecorded と同じ手順。MKB は Type 3 = KCD 無し)
+2. BN  = Binding Nonce           (Protected Area から Licensed Drive 経由で取得)
+3. Kpa = AES-G(Km, BN)           ← recordable 固有の 1 段
+4. Kt  = AES-128D(Kpa, Kte) XOR AES-H(Usage Rules)
+         (Kte = Unit_Key_RW.inf 内の暗号化された Title Key)
+5. C   = AES-128CBCE(Kt, C)     ← prerecorded と同一
+```
+
+**prerecorded (比較)**
+
+```
+Km  = MKB から計算
+VUK = AES-G(Km, VID)             ← VID = ROM Mark / BCA の Volume Identifier
+Kcu = AES-128D(VUK, enc_uk)      ← XOR 項なし
+C   = AES-128CBCE(Kcu, C)        ← 同一
+```
+
+| | prerecorded (BD-ROM) | recordable (録画) |
+|---|---|---|
+| MKB | `MKB_RO.inf` (Type **4**, KCD 付き) | `MKB_RW.inf` (Type **3**, KCD 無し) |
+| 鍵のルート | Km → VUK = AES-G(Km, **VID**) | Km → Kpa = AES-G(Km, **Binding Nonce**) |
+| Unit Key の復号 | AES-128D(VUK, enc_uk) | AES-128D(Kpa, Kte) **XOR AES-H(Usage Rules)** |
+| 鍵ファイル | `AACS/Unit_Key_RO.inf` | `AACS/AACS_av/Unit_Key_RW.inf` |
+| メディア識別 | ROM Mark / BCA の Volume ID (16 byte) | BCA の **Media ID** (16 byte) |
+| 追加の入力 | 無し | **Binding Nonce** (Protected Area、**ドライブ経由のみ**) |
+| **コンテンツ復号** | AES-128-CBC (Aligned Unit) | **同一** |
+
+**要点: コンテンツ復号アルゴリズムは prerecorded と完全に同一**で、
+違うのは「CPS Unit Key (Kcu) の導出」の 1 段だけ。
+AACS の実装ではなく「録画メディアの鍵導出 1 段」の追加で済む。
+
+### 7.5 libaacs の現状 — 再利用できるもの
+
+libaacs (src/libaacs/) の構成は aacs.c / cci.c / content_cert.c / crypto.c /
+ec.c / mkb.c / mmc.c / unit_key.c の 8 ファイルで、
+録画用を別実装した aacs_rd.c のようなものは無い。
+
+| 要素 | libaacs の実装 | 録画用での再利用 |
+|---|---|---|
+| MKB 解析・Media Key 計算 | `mkb.c` / `_calc_mk()` | **そのまま流用可**。`mkb.c:206-207` で `MKB_TYPE_3` と `MKB_TYPE_4` は同じ dv_record (0x81) を参照しており、Type 3 も同じコードパスで通る |
+| AES-128 ECB 復号 | `crypto_aes128d()` | **流用可** |
+| AES-G (片方向関数) | prerecorded の VUK 計算が `crypto_aes128d(mk, vid, vuk) ^ vid` | **同じ形で Kpa を計算できる** |
+| CMAC | `crypto_aes_cmac_16()` | 必要なら流用可 |
+| AES-128-CBC (Aligned Unit) | `crypto_aacs_decrypt()` / `_decrypt_unit()` | **変更不要** |
+| CPS Unit Usage File 解析 | `cci.c` (`AACS/CPSUnit%05d.cci`) | 形式は prerecorded と同一。ただし **`AACS/AACS_av/`** を優先する |
+| Unit Key File 解析 | `unit_key.c` `uk_parse()` | **ヘッダ構造が Table 3-4 になる**ため追加が必要 (下記 作業 2) |
+| MMC / REPORT KEY | `mmc.c` — VID (0x80), PMSN (0x81), Data Keys (0x84), MKB 読出 | **Binding Nonce 追加が容易** (下記 作業 3) |
+| タイトル → CPS unit 割当 | `unit_key.c` `_assign_titles()` | 流用可 |
+
+### 7.6 必要な作業項目 (libaacs 側)
+
+| # | 作業 | 規模 | 備考 |
+|---|---|---|---|
+| 1 | `AACS/MKB_RW.inf` の読み込み追加 | 小 | パス追加のみ。解析は既存流用 |
+| 2 | `AACS/AACS_av/Unit_Key_RW.inf` の読み込み + `uk_parse` のヘッダ差分 | 中 | Table 3-4 (`Unit_Key_Block_start_address` 32 bit + reserved 96 bit + header) |
+| 3 | **Binding Nonce の取得** (MMC コマンド) | 中 | Common Book Table 4-6: **REPORT KEY, Key Class 02, Key Format `1000012`** (AACS-Auth 後、Valid AGID 必要)。既存の `_mmc_read_vid()` (READ DISC STRUCTURE 0x80) と同じ骨格で書ける。非対応時は Status 5/6F/02 (COPY PROTECTION KEY) |
+| 4 | Kpa の計算 | 小 | `crypto_aes128d(km, nonce, kpa) ^ nonce` |
+| 5 | **Kt の計算** | **中〜大** | `crypto_aes128d(kpa, kte, kt) ^ AES-H(Usage Rules)`。**AES-H は libaacs に存在しない** (`crypto.h` のプリミティブ一覧に無い) ので Common Book の定義を確認して実装が必要 |
+| 6 | Usage Rules の抽出 | 中 | `cci.c` の解析結果から Kt の XOR 項に使うデータを取り出す |
+| 7 | メディア識別子の扱いを分岐 | 小 | prerecorded は VID 経路、recordable は Media ID 経路 |
+
+1〜4 は既存コードの流用で 100〜200 行程度、5〜6 が実装の本体。
+
+### 7.7 実現性評価と代替案
+
+**可能。ただし条件付き**で、決定的なのは **作業 3 (Binding Nonce の drive コマンド)**。
+
+- Binding Nonce は Protected Area にあり、**別の入手口が無い**。
+  AACS-Auth 成功後に REPORT KEY (Key Format `1000012`) を投げる必要がある
+- 録画用ドライブがこれに非対応なら **原理的に復号できない**
+- 実機 (BD ドライブ) でこのコマンドが通るかの確認が**最大の前提条件**
+
+作業量: **2〜4 人日** (仕様書の該当章の精読と実機でのコマンド検証を含む)。
+
+**代替案**: libmmbd (MakeMKV の libaacs 互換実装) は録画用 AACS を実装済みで、
+MakeMKV が BD-R/BD-RE 録画ディスクをリッピングできることが証拠。
+libbluray は既に `libmmbd` を候補としてロードするので、
+`LIBAACS_PATH` に指定するだけで復号できる可能性がある → **実装ゼロ**。
+ただし libmmbd は MakeMKV の配布物内のバイナリでソース非公開。
+
+| 方針 | 内容 | 判断 |
+|---|---|---|
+| **A. 先に libmmbd を試す** | `LIBAACS_PATH` に libmmbd を指定して実ディスクの復号を試す | **最初に試す価値あり**。実装ゼロ |
+| **B. libaacs に recordable 対応を追加** | 作業 1〜7。Binding Nonce コマンドが実機で通ることが前提 | 必要になった場合。仕様書は全部公開されているので情報の出所は揃っている |
+| **C. libbluray 側** (済) | BDAV メタデータ解析、AACS 判定 (`MKB_RW.inf`)、STN 合成、チャプター判定 | 完了済み。復号部分は A/B に委ねる |
+
+なお **libbluray 側は BDAV の管理情報 (index.bdav / .rpls / .clpi) を
+暗号化なしで解釈できる**ので、復号が解決すれば BDAV の視聴は完成する。
+
+### 7.8 参照資料
+
+- AACS LA 仕様書一覧: <https://aacsla.com/aacs-specifications/>
+- Introduction and Common Cryptographic Elements Book Rev 0.953:
+  <http://aacsla.com/wp-content/uploads/2019/02/AACS_Spec_Common_Final_0953.pdf>
+- Blu-ray Disc Recordable Video Book Rev 0.921:
+  <http://aacsla.com/wp-content/uploads/2019/02/AACS_Spec_BD_Recordable_0.921.pdf>
+- Recordable Video Book Rev 0.953:
+  <http://aacsla.com/wp-content/uploads/2019/02/AACS_Spec_Recordable_Final_0_953.pdf>
+- libaacs 本体: <https://code.videolan.org/videolan/libaacs>
+- libmmbd (MakeMKV): <https://www.makemkv.com/libmmbd/>
+
+---
+
+## 8. 未確定事項 (実装前に詰める)
 
 **決定済み** (§4.3 / §4.4):
 
@@ -945,17 +1114,17 @@ README かリリースノートに「BDAV は `bd_get_titles()` 経由で使う�
 
 ---
 
-## 8. 実装状況 (2026-10)
+## 9. 実装状況 (2026-10)
 
 HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 
-### 8.1 実装済みの変更
+### 9.1 実装済みの変更
 
 | ファイル | 変更内容 |
 |---|---|
 | `src/libbluray/disc/disc.h` / `.c` | `bd_disc_format` (BDMV/BDAV) を追加。`disc_open()` 起動時に `BDMV/index.bdmv` が無く `BDAV/index.bdav` or `BDAV/info.bdav` が有るなら BDAV と判定 (BDMV 優先)。`disc_format()` / `disc_root_dir()` / `disc_app_path()` を追加。`disc_open_stream()` / `disc_open_path_dec()` / `disc_pseudo_id()` をルート対応化 |
 | `src/libbluray/bdnav/bdmv_parse.c` / `.h` | `bdmv_parse_header2()` を追加 (複数シグネチャ受理)。既存 `bdmv_parse_header()` はそのラッパ |
-| `src/libbluray/bdnav/clpi_parse.c` | `M2TS0100` (BDAV) シグネチャ受理。BDAV 用 stream attribute 解析 (ISRC 無し・最大 3 byte・言語コード無し) を追加。BDMV には extension data が無いので 0x18 は reserved 扱い。`clpi_lookup_spn()` に **coarse テーブルが STC 開始点を含まない場合の fallback** を追加 (§8.3) |
+| `src/libbluray/bdnav/clpi_parse.c` | `M2TS0100` (BDAV) シグネチャ受理。BDAV 用 stream attribute 解析 (ISRC 無し・最大 3 byte・言語コード無し) を追加。BDMV には extension data が無いので 0x18 は reserved 扱い。`clpi_lookup_spn()` に **coarse テーブルが STC 開始点を含まない場合の fallback** を追加 (§9.3) |
 | `src/libbluray/bdnav/mpls_parse.c` | `PLST0100` (BDAV) シグネチャ受理。BDAV 用 PlayItem (byte-aligned 20 byte) / PlayListMark (46 byte/件・maker_id 保存) 解析を追加。`MPLS_PLM.maker_id` を追加。`mpls_filename()` を追加 (`.mpls` / `.rpls`) |
 | `src/libbluray/bdnav/mpls_data.h` | `MPLS_PL.is_bdav` / `MPLS_PLM.maker_id` / `BD_MARK_CHAPTER` を追加 |
 | `src/libbluray/bdnav/uo_mask.h` | `uo_mask_get_all()` を追加 (UO mask を持たない形式用) |
@@ -965,7 +1134,7 @@ HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 | `src/libbluray/disc/aacs.c` | AACS 判定に録画用 AACS の `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を追加 (§6.6.2 注意 1) |
 | `src/tools/bd_list_titles.c` | 出力の `(playlist: %05d.mpls)` を `(playlist: %05d)` に (拡張子は形式依存) |
 
-### 8.2 テスト
+### 9.2 テスト
 
 `test/bdav/` に合成テストディスク生成と回帰確認スクリプトを追加した。
 
@@ -983,7 +1152,7 @@ meson compile -C build
 
 実測結果: BDAV / BDMV とも全項目 PASS。読み出した m2ts は元と md5 一致。
 
-### 8.3 実装中に判明した BDMV 共通の実装不具合
+### 9.3 実装中に判明した BDMV 共通の実装不具合
 
 `clpi_lookup_spn()` (src/libbluray/bdnav/clpi_parse.c) は、STC シーケンスの
 開始 SPN に対応する coarse entry が無いと
@@ -997,9 +1166,9 @@ STC 2 個目以降の PlayItem が丸ごと再生不能になっていた。
 BDMV 側でも同じ状況 (クリップ末尾 11 秒以内の PCR 不連続) で
 同じ不具合が発生していたので、BDMV 側の挙動改善にも繋がる。
 
-### 8.4 残作業
+### 9.4 残作業
 
-- **実物 BDAV ディスクでの検証** (§7 の Q1/Q2/Q3/Q7/Q8 が実測で確定する)
+- **実物 BDAV ディスクでの検証** (§8 の Q1/Q2/Q3/Q7/Q8 が実測で確定する)
 - **AACS 経路の検証** (§6.6.3)。BDAV index 解析により
   `disc_info.num_titles` がプレイリスト数になる → `use_menus` は 0 のまま →
   `bdpriv_dec_open_stream()` の `aacs_select_title(aacs, 0xffff)` による

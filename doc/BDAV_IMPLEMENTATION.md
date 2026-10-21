@@ -240,7 +240,7 @@ BDAV index (`index.bdav` / `info.bdav`) を解析し、`TableOfPlayLists`
 `MKB_RO.inf` / `Unit_Key_RO.inf` / `CPSUnit*.cci` / `Content*.cer` のみ)。
 録画ディスクの復号には **libmmbd** (MakeMKV の libaacs 互換実装) が必要で、
 libbluray は既に `libmmbd` を候補としてロードする。
-詳細は `BDAV_SUPPORT.md` §6.6.2 を参照。
+詳細は `BDAV_SUPPORT.md` §6.6.2 と §7 を参照。
 
 ### 4.10 ツール
 
@@ -322,7 +322,7 @@ BDMV 側にも同じ内容のディスクを生成し、既存の (未変更の)
 
 | 項目 | 内容 |
 |---|---|
-| **実物 BDAV ディスクでの検証** | 実機入手後に `BDAV_SUPPORT.md` §7 の Q1 (`index.bdav` vs `info.bdav`)、Q2 (mark_type)、Q3 (backup ディレクトリ名)、Q7 (1 録画 = 1 タイトルか) が実測で確定する |
+| **実物 BDAV ディスクでの検証** | 実機入手後に `BDAV_SUPPORT.md` §8 の Q1 (`index.bdav` vs `info.bdav`)、Q2 (mark_type)、Q3 (backup ディレクトリ名)、Q7 (1 録画 = 1 タイトルか) が実測で確定する |
 | **AACS 経路の動作確認** | BDAV index 解析により `disc_info.num_titles` がプレイリスト数になり、`use_menus` は 0 のままなので `aacs_select_title(aacs, 0xffff)` による手動 CPS リセットが有効になる。**日本の BD 録画ディスクは録画用 AACS が碰到されている可能性が高い** (CAS 暗号化は無いが AACS はある)。素の libaacs は録画用 AACS に対応していないため、実ディスクの復号には **libmmbd** が必要 |
 | **AACS ディレクトリの形** | 録画機によって `AACS/` ではなく `AACS_bd/`、サブディレクトリが `AACS_av/` ではなく `AACS_AV/` になる。`MKB_RW.inf` の位置だけ合わせれば判定は効く |
 | **HEVC TS (BDAV v5.0)** | メタデータ構造が共通の可能性が高いが、HEVC TS モードの index / playlist が別形式かは未確認 (BD-RE Part 3 v5.0 の正本参照が必要) |
