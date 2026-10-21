@@ -177,6 +177,7 @@ NAV_TITLE が所有し、タイトル close 時にまとめて解放される。
 ## BDAV 対応 (HDMV TS モードまで実装済み)
 
 - 設計・実装メモ: **`doc/BDAV_SUPPORT.md`** (仕様 / 差分 / 方針 / 実装状況)
+- 変更点と対応過程のまとめ: **`doc/BDAV_IMPLEMENTATION.md`**
 - BDAV (BD-RE Part 3) は `BDAV/` ルート + `index.bdav`/`info.bdav` +
   `PLAYLIST/*.rpls` (PLST0100) + `CLIPINF/*.clpi` (M2TS0100) を持つ。
   BDMV との差分 (PlayItem 20 バイト・STN なし、PlayListMark 46 バイト、
