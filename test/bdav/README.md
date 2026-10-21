@@ -54,7 +54,7 @@ BDAV と BDMV の両方を同じ内容で検査する (BDMV は回帰確認用)�
 BDAV のメタデータは <https://github.com/sorshi/bdav> の
 `tools/bdav_dump.py` と同じ構造で生成している (同ツールの writer は
 chotBDAV.exe とバイト一致で検証済み)。実物の BDAV ディスクを入手した
-/content と突き合わせる際の基準可以作为。
+内容と突き合わせる際の基準として使える。
 
 ```bash
 git clone https://github.com/sorshi/bdav

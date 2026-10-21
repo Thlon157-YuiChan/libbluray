@@ -1,7 +1,7 @@
 # BDAV 対応 実装報告
 
 libbluray に BDAV (BD-RE Part 3 "Audio Visual Application Format") の
-HDMV TS プレイモード対応を実装した过程的まとめ。
+HDMV TS プレイモード対応を実装した経過のまとめ。
 
 - 設計・仕様・判断の根拠: [`BDAV_SUPPORT.md`](BDAV_SUPPORT.md)
 - テスト: [`../test/bdav/README.md`](../test/bdav/README.md)
@@ -47,7 +47,7 @@ libbluray は BD-ROM (BDMV) と AVCHD (8.3 ファイル名の BDMV 亜種) の�
 1. BDAV ディスクを **BDMV ディスクと同じ API** (`bd_open()` →
    `bd_get_titles()` → `bd_select_title()` → `bd_read()`) で開けるようにする
 2. BDMV の既存挙動を **一切変えない**
-3. 検証の手段が無い环境中でも **再現できるテスト** を用意する
+3. 検証の手段が無い環境中でも **再現できるテスト** を用意する
 
 ### 1.3 スコープ
 
@@ -88,7 +88,7 @@ HEVC TS (v5.0) と SESF (アナログ SD) は対象外とした。
 
 ### 3.1 調査 (コード読解 + 実ファイル仕様の特定)
 
-libbluray 側をコードから読み的同时、BDAV の実ファイル仕様を
+libbluray 側をコードから読みながら、BDAV の実ファイル仕様を
 外部資料で特定した。
 
 - **BD-RE Part 3 (BDAV) のファイル仕様**
@@ -182,7 +182,7 @@ libbluray 側をコードから読み的同时、BDAV の実ファイル仕様�
 | `_parse_playitem_bdav()` | BDAV 専用。byte aligned 20 byte の PlayItem。UO mask・still mode・角度情報・STN テーブルが無い |
 | `_parse_playlistmark_bdav()` | BDAV 専用。46 byte/件。`mark_type` / `maker_id` / `ref_to_PlayItem_id` / `mark_time_stamp` / `entry_ES_PID` を読み、残りは reserved |
 | `MPLS_PL.is_bdav` | 追加 |
-| `MPLS_PLM.maker_id` | 追加 (BDMV では 0)。判定を後から変えられるように 정보를保存する |
+| `MPLS_PLM.maker_id` | 追加 (BDMV では 0)。判定を後から変えられるように情報を保存する |
 | `BD_MARK_CHAPTER` | 追加 (BDAV のチャプター mark type 4) |
 | `mpls_filename()` | 追加。プレイリスト ID から `"00001.mpls"` / `"00001.rpls"` を生成 |
 
@@ -272,7 +272,7 @@ EP マップの coarse テーブルは「fine table の PTS / SPN が wrap す�
 
 BDAV 側のメタデータは `sorshi/bdav` の writer と同じ構造
 (chotBDAV 互換) で生成しているので、実物の BDAV ディスクを入手した
-_content と突き合わせる際の基準可以作为。
+内容と突き合わせる際の基準として使える。
 
 ### 6.2 自動チェック
 
@@ -300,7 +300,7 @@ meson compile -C build
 BDMV 側にも同じ内容のディスクを生成し、既存の (未変更の) パーサで
 解析・読み出しできることを確認した。BDMV パスに追加した条件分岐は
 「既に true だった条件の分岐」だけで、BDMV に対して新しい条件は
- 들어가지 않는다。
+入っていない。
 
 ---
 
