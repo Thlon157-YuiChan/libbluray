@@ -306,9 +306,135 @@ static INDX_ROOT *_indx_get(BD_DISC *disc, const char *path)
     return index;
 }
 
+/*
+ * BDAV index (BD-RE Part 3)
+ *
+ * The BDAV index has no first play / top menu objects and no HDMV title
+ * list. It only has a table of the playlists stored in the disc.
+ */
+
+#define BDAV_SIG1  ('B' << 24 | 'D' << 16 | 'A' << 8 | 'V')
+
+static int
+_parse_bdav_table(BITSTREAM *bs, uint32_t table_pos, INDX_ROOT *index)
+{
+    uint32_t len;
+    uint16_t num, ii;
+    char name[11];
+
+    if (bs_seek_byte(bs, table_pos) < 0) {
+        return 0;
+    }
+
+    // length field
+    len = bs_read(bs, 32);
+    if (bs_avail(bs) < len * 8) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "index.bdav: invalid TableOfPlayLists length %d !\n", len);
+        return 0;
+    }
+
+    // number of playlists
+    num = bs_read(bs, 16);
+    if (bs_avail(bs) < num * 10 * 8) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "index.bdav: unexpected EOF\n");
+        return 0;
+    }
+
+    index->titles = calloc(num, sizeof(INDX_TITLE));
+    if (!index->titles) {
+        BD_DEBUG(DBG_CRIT, "out of memory\n");
+        return 0;
+    }
+    index->num_titles = num;
+
+    for (ii = 0; ii < num; ii++) {
+        bs_read_string(bs, name, 10);
+        index->titles[ii].object_type = indx_object_type_hdmv;
+        index->titles[ii].access_type = indx_access_permitted;
+        index->titles[ii].hdmv.playback_type = indx_hdmv_playback_type_movie;
+        index->titles[ii].hdmv.id_ref = atoi(name);
+    }
+
+    return 1;
+}
+
+static INDX_ROOT *
+_indx_parse_bdav(BD_FILE_H *fp)
+{
+    BITSTREAM  bs;
+    INDX_ROOT *index;
+    uint32_t   table_pos, mpd_pos;
+
+    if (bs_init(&bs, fp) < 0) {
+        BD_DEBUG(DBG_NAV, "index.bdav: read error\n");
+        return NULL;
+    }
+
+    index = calloc(1, sizeof(INDX_ROOT));
+    if (!index) {
+        BD_DEBUG(DBG_CRIT, "out of memory\n");
+        return NULL;
+    }
+
+    if (!bdmv_parse_header(&bs, BDAV_SIG1, &index->indx_version)) {
+        indx_free(&index);
+        return NULL;
+    }
+
+    if (bs_avail(&bs) < 2 * 32) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "index.bdav: unexpected end of file\n");
+        indx_free(&index);
+        return NULL;
+    }
+    table_pos = bs_read(&bs, 32);
+    mpd_pos   = bs_read(&bs, 32);
+    (void)mpd_pos;
+
+    if (!_parse_bdav_table(&bs, table_pos, index)) {
+        indx_free(&index);
+        return NULL;
+    }
+
+    return index;
+}
+
+static INDX_ROOT *
+_indx_get_bdav(BD_DISC *disc, const char *path)
+{
+    BD_FILE_H *fp;
+    INDX_ROOT *index;
+
+    fp = disc_open_path(disc, path);
+    if (!fp) {
+        return NULL;
+    }
+
+    index = _indx_parse_bdav(fp);
+    file_close(fp);
+    return index;
+}
+
 INDX_ROOT *indx_get(BD_DISC *disc)
 {
     INDX_ROOT *index;
+    char *path;
+
+    if (disc_format(disc) == DISC_FORMAT_BDAV) {
+        path = disc_app_path(disc, "index.bdav");
+        if (path) {
+            index = _indx_get_bdav(disc, path);
+            X_FREE(path);
+            if (index) {
+                return index;
+            }
+        }
+        path = disc_app_path(disc, "info.bdav");
+        if (path) {
+            index = _indx_get_bdav(disc, path);
+            X_FREE(path);
+        }
+        return index;
+    }
 
     index = _indx_get(disc, "BDMV" DIR_SEP "index.bdmv");
 

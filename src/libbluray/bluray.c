@@ -40,6 +40,7 @@
 #include "bdnav/index_parse.h"
 #include "bdnav/meta_parse.h"
 #include "bdnav/meta_data.h"
+#include "bdnav/mpls_parse.h"
 #include "bdnav/sound_parse.h"
 #include "bdnav/uo_mask.h"
 #include "hdmv/hdmv_vm.h"
@@ -1053,6 +1054,10 @@ static void _fill_disc_info(BLURAY *bd, BD_ENC_INFO *enc_info)
 
     if (bd->disc) {
         bd->disc_info.udf_volume_id = disc_volume_id(bd->disc);
+        if (disc_format(bd->disc) == DISC_FORMAT_BDAV) {
+            /* BDAV has no menus and no first play object. */
+            bd->disc_info.no_menu_support = 1;
+        }
         index = indx_get(bd->disc);
         if (!index) {
             /* check for incomplete disc */
@@ -2505,11 +2510,8 @@ static int _open_playlist(BLURAY *bd, unsigned playlist, unsigned angle)
 {
     char f_name[12];
 
-    if (playlist > 99999) {
+    if (mpls_filename(bd->disc, playlist, f_name, sizeof(f_name)) != 10) {
         BD_DEBUG(DBG_BLURAY | DBG_CRIT, "Invalid playlist %u!\n", playlist);
-        return 0;
-    }
-    if (snprintf(f_name, sizeof(f_name), "%05u.mpls", playlist) != 10) {
         return 0;
     }
 
@@ -2959,14 +2961,10 @@ static BLURAY_TITLE_INFO *_get_mpls_info(BLURAY *bd, uint32_t title_idx, uint32_
 {
     NAV_TITLE *title;
     BLURAY_TITLE_INFO *title_info;
-    char mpls_name[11];
+    char mpls_name[12];
 
-    if (playlist > 99999) {
+    if (mpls_filename(bd->disc, playlist, mpls_name, sizeof(mpls_name)) != 10) {
         BD_DEBUG(DBG_BLURAY | DBG_CRIT, "Invalid playlist %u!\n", playlist);
-        return NULL;
-    }
-
-    if (snprintf(mpls_name, sizeof(mpls_name), "%05u.mpls", playlist) != 10) {
         return NULL;
     }
 

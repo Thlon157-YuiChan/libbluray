@@ -36,10 +36,16 @@
 #include "util/logging.h"
 #include "util/macro.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MPLS_SIG1 ('M' << 24 | 'P' << 16 | 'L' << 8 | 'S')
+#define RPLS_SIG1 ('P' << 24 | 'L' << 16 | 'S' << 8 | 'T')
+
+/* BDAV (BD-RE Part 3) playlists use a different signature and a
+ * different playlist / playitem / playitemmark layout than BDMV ones. */
+#define _is_bdav(pl) ((pl)->type_indicator == RPLS_SIG1)
 
 static int
 _parse_uo(BITSTREAM *bits, BD_UO_MASK *uo)
@@ -91,10 +97,14 @@ _parse_appinfo(BITSTREAM *bits, MPLS_AI *ai)
 static int
 _parse_header(BITSTREAM *bits, MPLS_PL *pl)
 {
-    pl->type_indicator = MPLS_SIG1;
-    if (!bdmv_parse_header(bits, pl->type_indicator, &pl->type_indicator2)) {
+    static const uint32_t types[] = { MPLS_SIG1, RPLS_SIG1 };
+    uint32_t type = 0;
+
+    if (!bdmv_parse_header2(bits, types, 2, &type, &pl->type_indicator2)) {
         return 0;
     }
+    pl->type_indicator = type;
+    pl->is_bdav = _is_bdav(pl);
 
     if (bs_avail(bits) < 5 * 32 + 160) {
         BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_header: unexpected end of file\n");
@@ -108,7 +118,16 @@ _parse_header(BITSTREAM *bits, MPLS_PL *pl)
     // Skip 160 reserved bits
     bs_skip(bits, 160);
 
-    _parse_appinfo(bits, &pl->app_info);
+    if (_is_bdav(pl)) {
+        /* BDAV app info has a completely different layout and carries
+         * no UO mask. Everything is allowed. */
+        pl->app_info.playback_type     = 0;
+        pl->app_info.playback_count    = 0;
+        pl->app_info.uo_mask           = uo_mask_get_all();
+        pl->app_info.random_access_flag = 1;
+    } else {
+        _parse_appinfo(bits, &pl->app_info);
+    }
     return 1;
 }
 
@@ -436,8 +455,79 @@ _clean_stn(MPLS_STN *stn)
 }
 
 static int
-_parse_playitem(BITSTREAM *bits, MPLS_PI *pi)
+_parse_playitem_bdav(BITSTREAM *bits, MPLS_PI *pi)
 {
+    int len;
+    int64_t pos;
+    char clip_id[6], codec_id[5];
+    uint8_t stc_id;
+
+    if (!bs_is_align(bits, 0x07)) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_playitem_bdav: alignment error\n");
+    }
+
+    // PlayItem Length
+    len = bs_read(bits, 16);
+    pos = bs_pos(bits) >> 3;
+
+    if (len < 20) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_playitem_bdav: invalid length %d\n", len);
+        return 0;
+    }
+    if (bs_avail(bits)/8 < len) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_playitem_bdav: unexpected EOF\n");
+        return 0;
+    }
+
+    // Primary Clip identifer
+    bs_read_string(bits, clip_id, 5);
+
+    bs_read_string(bits, codec_id, 4);
+    if (memcmp(codec_id, "M2TS", 4) != 0) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "Incorrect CodecIdentifier (%s)\n", codec_id);
+    }
+
+    // Skip reserved 8 bits
+    bs_skip(bits, 8);
+    pi->connection_condition = bs_read(bits, 8);
+    stc_id = bs_read(bits, 8);
+    pi->in_time  = bs_read(bits, 32);
+    pi->out_time = bs_read(bits, 32);
+
+    /* BDAV play items have no UO mask, still mode, angle info or
+     * stream coding info table. */
+    pi->is_multi_angle    = 0;
+    pi->uo_mask           = uo_mask_get_all();
+    pi->random_access_flag = 1;
+    pi->still_mode        = 0;
+    pi->still_time        = 0;
+    pi->angle_count       = 1;
+    pi->is_different_audio = 0;
+    pi->is_seamless_angle  = 0;
+
+    pi->clip = calloc(pi->angle_count, sizeof(MPLS_CLIP));
+    if (!pi->clip) {
+        return 0;
+    }
+    strcpy(pi->clip[0].clip_id, clip_id);
+    strcpy(pi->clip[0].codec_id, codec_id);
+    pi->clip[0].stc_id = stc_id;
+
+    // Seek past any unused items
+    if (bs_seek_byte(bits, pos + len) < 0) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int
+_parse_playitem(BITSTREAM *bits, MPLS_PI *pi, int is_bdav)
+{
+    if (is_bdav) {
+        return _parse_playitem_bdav(bits, pi);
+    }
+
     int len, ii;
     int64_t pos;
     char clip_id[6], codec_id[5];
@@ -690,8 +780,60 @@ _clean_subpath(MPLS_SUB *sp)
 }
 
 static int
-_parse_playlistmark(BITSTREAM *bits, MPLS_PL *pl)
+_parse_playlistmark_bdav(BITSTREAM *bits, MPLS_PL *pl)
 {
+    int64_t len;
+    int ii;
+    MPLS_PLM *plm = NULL;
+
+    if (bs_seek_byte(bits, pl->mark_pos) < 0) {
+        return 0;
+    }
+
+    // length field
+    len = bs_read(bits, 32);
+
+    if (bs_avail(bits)/8 < len) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_playlistmark_bdav: unexpected EOF\n");
+        return 0;
+    }
+
+    // Then get the number of marks
+    pl->mark_count = bs_read(bits, 16);
+
+    if (bs_avail(bits)/(8*46) < pl->mark_count) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_playlistmark_bdav: unexpected EOF\n");
+        return 0;
+    }
+
+    plm = calloc(pl->mark_count, sizeof(MPLS_PLM));
+    if (pl->mark_count && !plm) {
+        BD_DEBUG(DBG_CRIT, "out of memory\n");
+        return 0;
+    }
+
+    for (ii = 0; ii < pl->mark_count; ii++) {
+        plm[ii].mark_type     = bs_read(bits, 8);
+        bs_skip(bits, 8); /* reserved */
+        plm[ii].maker_id      = bs_read(bits, 16);
+        plm[ii].play_item_ref = bs_read(bits, 16);
+        plm[ii].time          = bs_read(bits, 32);
+        plm[ii].entry_es_pid  = bs_read(bits, 16);
+        bs_skip(bits, 16); /* reserved */
+        bs_skip(bits, 32 * 8); /* reserved */
+        plm[ii].duration      = 0;
+    }
+    pl->play_mark = plm;
+    return 1;
+}
+
+static int
+_parse_playlistmark(BITSTREAM *bits, MPLS_PL *pl, int is_bdav)
+{
+    if (is_bdav) {
+        return _parse_playlistmark_bdav(bits, pl);
+    }
+
     int64_t len;
     int ii;
     MPLS_PLM *plm = NULL;
@@ -767,7 +909,7 @@ _parse_playlist(BITSTREAM *bits, MPLS_PL *pl)
         }
     pl->play_item = pi;
     for (ii = 0; ii < pl->list_count; ii++) {
-        if (!_parse_playitem(bits, &pi[ii])) {
+        if (!_parse_playitem(bits, &pi[ii], _is_bdav(pl))) {
             BD_DEBUG(DBG_NAV | DBG_CRIT, "error parsing play list item\n");
             return 0;
         }
@@ -1119,12 +1261,12 @@ _mpls_parse(BD_FILE_H *fp)
         _clean_playlist(pl);
         return NULL;
     }
-    if (!_parse_playlistmark(&bits, pl)) {
+    if (!_parse_playlistmark(&bits, pl, _is_bdav(pl))) {
         _clean_playlist(pl);
         return NULL;
     }
 
-    if (pl->ext_pos > 0) {
+    if (pl->ext_pos > 0 && !_is_bdav(pl)) {
         bdmv_parse_extension_data(&bits,
                                   pl->ext_pos,
                                   _parse_mpls_extension,
@@ -1171,13 +1313,38 @@ MPLS_PL*
 mpls_get(BD_DISC *disc, const char *file)
 {
     MPLS_PL *pl;
+    char *dir;
 
-    pl = _mpls_get(disc, "BDMV" DIR_SEP "PLAYLIST", file);
-    if (pl) {
-        return pl;
+    dir = disc_app_path(disc, "PLAYLIST");
+    if (dir) {
+        pl = _mpls_get(disc, dir, file);
+        X_FREE(dir);
+        if (pl) {
+            return pl;
+        }
     }
 
     /* if failed, try backup file */
-    pl = _mpls_get(disc, "BDMV" DIR_SEP "BACKUP" DIR_SEP "PLAYLIST", file);
+    dir = disc_app_path(disc, "BACKUP" DIR_SEP "PLAYLIST");
+    if (dir) {
+        pl = _mpls_get(disc, dir, file);
+        X_FREE(dir);
+    }
+
     return pl;
+}
+
+int
+mpls_filename(BD_DISC *disc, uint32_t playlist_id, char *buf, size_t size)
+{
+    const char *ext = disc_format(disc) == DISC_FORMAT_BDAV ? ".rpls" : ".mpls";
+
+    if (playlist_id > 99999) {
+        return -1;
+    }
+    if (snprintf(buf, size, "%05u%s", playlist_id, ext) != 10) {
+        return -1;
+    }
+
+    return 10;
 }

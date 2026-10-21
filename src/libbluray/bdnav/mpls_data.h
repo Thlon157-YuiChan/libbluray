@@ -27,6 +27,7 @@
 
 #define BD_MARK_ENTRY   0x01
 #define BD_MARK_LINK    0x02
+#define BD_MARK_CHAPTER 0x04  /* BDAV: chapter mark */
 
 typedef struct
 {
@@ -103,6 +104,7 @@ typedef struct
     uint32_t        time;
     uint16_t        entry_es_pid;
     uint32_t        duration;
+    uint16_t        maker_id;      /* BDAV only. 0 for BDMV. */
 } MPLS_PLM;
 
 typedef struct
@@ -202,8 +204,9 @@ typedef struct mpls_static_metadata
 
 typedef struct mpls_pl
 {
-    uint32_t        type_indicator;   /* 'MPLS' */
+    uint32_t        type_indicator;   /* 'MPLS' or 'PLST' */
     uint32_t        type_indicator2;  /* version */
+    uint8_t         is_bdav;          /* BDAV (BD-RE Part 3) playlist */
     uint32_t        list_pos;
     uint32_t        mark_pos;
     uint32_t        ext_pos;

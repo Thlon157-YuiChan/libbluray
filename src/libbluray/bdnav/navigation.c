@@ -44,6 +44,197 @@
  * Utils
  */
 
+/*
+ * BDAV playlists have no stream coding info table. The stream information
+ * is stored in the clip information (CLPI) program info instead.
+ */
+
+enum {
+    STN_CLASS_OTHER = 0,
+    STN_CLASS_VIDEO,
+    STN_CLASS_AUDIO,
+    STN_CLASS_PG,
+    STN_CLASS_IG,
+};
+
+static int
+_stn_stream_class(uint8_t coding_type)
+{
+    switch (coding_type) {
+        case BD_STREAM_TYPE_VIDEO_MPEG1:
+        case BD_STREAM_TYPE_VIDEO_MPEG2:
+        case BD_STREAM_TYPE_VIDEO_H264:
+        case BD_STREAM_TYPE_VIDEO_HEVC:
+        case BD_STREAM_TYPE_VIDEO_VC1:
+            return STN_CLASS_VIDEO;
+
+        case BD_STREAM_TYPE_AUDIO_MPEG1:
+        case BD_STREAM_TYPE_AUDIO_MPEG2:
+        case BD_STREAM_TYPE_AUDIO_LPCM:
+        case BD_STREAM_TYPE_AUDIO_AC3:
+        case BD_STREAM_TYPE_AUDIO_DTS:
+        case BD_STREAM_TYPE_AUDIO_TRUHD:
+        case BD_STREAM_TYPE_AUDIO_AC3PLUS:
+        case BD_STREAM_TYPE_AUDIO_DTSHD:
+        case BD_STREAM_TYPE_AUDIO_DTSHD_MASTER:
+        case 0x0f:   /* MPEG-2 AAC */
+        case 0x11:   /* LPCM */
+        case 0xa1:
+        case 0xa2:
+            return STN_CLASS_AUDIO;
+
+        case BD_STREAM_TYPE_SUB_PG:
+        case BD_STREAM_TYPE_SUB_TEXT:
+            return STN_CLASS_PG;
+
+        case BD_STREAM_TYPE_SUB_IG:
+        case 0xa0:   /* Graphics */
+            return STN_CLASS_IG;
+
+        default:
+            return STN_CLASS_OTHER;
+    }
+}
+
+static int
+_stn_has_pid(const MPLS_STREAM *list, unsigned count, uint16_t pid)
+{
+    unsigned ii;
+
+    for (ii = 0; ii < count; ii++) {
+        if (list[ii].pid == pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+_stn_count_clpi(const CLPI_CL *cl, MPLS_STN *stn)
+{
+    unsigned ii, jj;
+
+    for (ii = 0; ii < cl->program.num_prog; ii++) {
+        const CLPI_PROG *prog = &cl->program.progs[ii];
+        for (jj = 0; jj < prog->num_streams; jj++) {
+            const CLPI_PROG_STREAM *ss = &prog->streams[jj];
+            switch (_stn_stream_class(ss->coding_type)) {
+                case STN_CLASS_VIDEO:
+                    stn->num_video++;
+                    break;
+                case STN_CLASS_AUDIO:
+                    stn->num_audio++;
+                    break;
+                case STN_CLASS_PG:
+                    stn->num_pg++;
+                    break;
+                case STN_CLASS_IG:
+                    stn->num_ig++;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+}
+
+static void
+_stn_fill_clpi(const CLPI_CL *cl, MPLS_STN *stn)
+{
+    unsigned ii, jj;
+    unsigned num_video = 0, num_audio = 0, num_pg = 0, num_ig = 0;
+    MPLS_STREAM *s;
+
+    for (ii = 0; ii < cl->program.num_prog; ii++) {
+        const CLPI_PROG *prog = &cl->program.progs[ii];
+        for (jj = 0; jj < prog->num_streams; jj++) {
+            const CLPI_PROG_STREAM *ss = &prog->streams[jj];
+
+            switch (_stn_stream_class(ss->coding_type)) {
+                case STN_CLASS_VIDEO:
+                    if (_stn_has_pid(stn->video, num_video, ss->pid)) {
+                        continue;
+                    }
+                    s = &stn->video[num_video++];
+                    break;
+                case STN_CLASS_AUDIO:
+                    if (_stn_has_pid(stn->audio, num_audio, ss->pid)) {
+                        continue;
+                    }
+                    s = &stn->audio[num_audio++];
+                    break;
+                case STN_CLASS_PG:
+                    if (_stn_has_pid(stn->pg, num_pg, ss->pid)) {
+                        continue;
+                    }
+                    s = &stn->pg[num_pg++];
+                    break;
+                case STN_CLASS_IG:
+                    if (_stn_has_pid(stn->ig, num_ig, ss->pid)) {
+                        continue;
+                    }
+                    s = &stn->ig[num_ig++];
+                    break;
+                default:
+                    continue;
+            }
+
+            s->stream_type = 1;
+            s->coding_type = ss->coding_type;
+            s->pid         = ss->pid;
+            s->format      = ss->format;
+            s->rate        = ss->rate;
+            s->char_code   = ss->char_code;
+            memcpy(s->lang, ss->lang, 4);
+        }
+    }
+
+    stn->num_video = num_video;
+    stn->num_audio = num_audio;
+    stn->num_pg    = num_pg;
+    stn->num_ig    = num_ig;
+}
+
+/* Build stream coding info from the clip information */
+static int
+_stn_from_clpi(MPLS_STN *stn, const CLPI_CL *cl)
+{
+    if (!cl || !cl->program.progs) {
+        return 0;
+    }
+
+    _stn_count_clpi(cl, stn);
+
+    if (stn->num_video) {
+        stn->video = calloc(stn->num_video, sizeof(MPLS_STREAM));
+        if (!stn->video) {
+            return 0;
+        }
+    }
+    if (stn->num_audio) {
+        stn->audio = calloc(stn->num_audio, sizeof(MPLS_STREAM));
+        if (!stn->audio) {
+            return 0;
+        }
+    }
+    if (stn->num_pg) {
+        stn->pg = calloc(stn->num_pg, sizeof(MPLS_STREAM));
+        if (!stn->pg) {
+            return 0;
+        }
+    }
+    if (stn->num_ig) {
+        stn->ig = calloc(stn->num_ig, sizeof(MPLS_STREAM));
+        if (!stn->ig) {
+            return 0;
+        }
+    }
+
+    _stn_fill_clpi(cl, stn);
+
+    return 1;
+}
+
 static uint32_t
 _pl_duration(const MPLS_PL *pl)
 {
@@ -58,6 +249,25 @@ _pl_duration(const MPLS_PL *pl)
     return duration;
 }
 
+/*
+ * Chapter marks
+ *
+ * BDMV uses "entry" mark (type 1) for chapters. BDAV uses mark type 4
+ * for chapter marks and type 1 for the resume point.
+ */
+
+static int
+_pl_is_chapter(const MPLS_PL *pl, const MPLS_PLM *plm)
+{
+    if (plm->mark_type == BD_MARK_ENTRY) {
+        return 1;
+    }
+    if (pl->is_bdav && plm->mark_type == BD_MARK_CHAPTER) {
+        return 1;
+    }
+    return 0;
+}
+
 static uint32_t
 _pl_chapter_count(const MPLS_PL *pl)
 {
@@ -66,7 +276,7 @@ _pl_chapter_count(const MPLS_PL *pl)
     // Count the number of "entry" marks (skipping "link" marks)
     // This is the the number of chapters
     for (ii = 0; ii < pl->mark_count; ii++) {
-        if (pl->play_mark[ii].mark_type == BD_MARK_ENTRY) {
+        if (_pl_is_chapter(pl, &pl->play_mark[ii])) {
             chapters++;
         }
     }
@@ -401,8 +611,11 @@ NAV_TITLE_LIST* nav_get_title_list(BD_DISC *disc, uint32_t flags, uint32_t min_t
     NAV_TITLE_LIST *title_list = NULL;
     unsigned int title_info_alloc = 100;
     char *known_mpls_ids;
+    char *playlist_dir;
 
-    dir = disc_open_dir(disc, "BDMV" DIR_SEP "PLAYLIST");
+    playlist_dir = disc_app_path(disc, "PLAYLIST");
+    dir = playlist_dir ? disc_open_dir(disc, playlist_dir) : NULL;
+    X_FREE(playlist_dir);
     if (dir == NULL) {
         return NULL;
     }
@@ -601,7 +814,7 @@ _extrapolate_title(NAV_TITLE *title)
 
     for (ii = 0, jj = 0; ii < pl->mark_count; ii++) {
         plm = &pl->play_mark[ii];
-        if (plm->mark_type == BD_MARK_ENTRY) {
+        if (_pl_is_chapter(pl, plm)) {
 
             mark = &title->chap_list.mark[jj];
             _fill_mark(title, mark, ii);
@@ -772,7 +985,7 @@ NAV_TITLE* nav_title_open(BD_DISC *disc, const char *playlist, unsigned angle)
         }
         title->packets = 0;
         for (ii = 0; ii < title->pl->list_count; ii++) {
-            const MPLS_PI *pi;
+            MPLS_PI *pi;
             NAV_CLIP *clip;
 
             pi = &title->pl->play_item[ii];
@@ -781,6 +994,15 @@ NAV_TITLE* nav_title_open(BD_DISC *disc, const char *playlist, unsigned angle)
 
             _fill_clip(title, pi->clip, pi->connection_condition, pi->in_time, pi->out_time, pi->angle_count,
                        pi->still_mode, pi->still_time, clip, ii, &pos, &time);
+
+            if (title->pl->is_bdav) {
+                /* BDAV playlist has no stream coding info table.
+                 * Build it from the clip information. */
+                if (!_stn_from_clpi(&pi->stn, clip->cl)) {
+                    BD_DEBUG(DBG_NAV | DBG_CRIT, "nav_title_open(): no stream info for clip %s\n",
+                             pi->clip[0].clip_id);
+                }
+            }
         }
     }
 

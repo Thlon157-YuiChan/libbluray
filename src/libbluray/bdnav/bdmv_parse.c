@@ -31,28 +31,35 @@
 
 #define U32CHARS(u) (char)((u) >> 24), (char)((u) >> 16), (char)((u) >> 8), (char)(u)
 
-int bdmv_parse_header(BITSTREAM *bs, uint32_t type, uint32_t *version)
+int bdmv_parse_header2(BITSTREAM *bs, const uint32_t *types, unsigned count,
+                        uint32_t *type, uint32_t *version)
 {
     uint32_t tag, ver;
+    unsigned ii;
 
     if (bs_seek_byte(bs, 0) < 0) {
-        BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): seek failed\n", U32CHARS(type));
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): seek failed\n", U32CHARS(types[0]));
         return 0;
     }
 
     /* read and verify magic bytes and version code */
 
     if (bs_avail(bs)/8 < 8) {
-        BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): unexpected EOF\n", U32CHARS(type));
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): unexpected EOF\n", U32CHARS(types[0]));
         return 0;
     }
 
     tag = bs_read(bs, 32);
     ver = bs_read(bs, 32);
 
-    if (tag != type) {
+    for (ii = 0; ii < count; ii++) {
+        if (tag == types[ii]) {
+            break;
+        }
+    }
+    if (ii >= count) {
         BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): invalid signature %c%c%c%c\n",
-                 U32CHARS(type), U32CHARS(tag));
+                 U32CHARS(types[0]), U32CHARS(tag));
         return 0;
     }
 
@@ -64,13 +71,21 @@ int bdmv_parse_header(BITSTREAM *bs, uint32_t type, uint32_t *version)
             break;
         default:
             BD_DEBUG(DBG_NAV | DBG_CRIT, "bdmv_parse_header(%c%c%c%c): unsupported file version %c%c%c%c\n",
-                     U32CHARS(type), U32CHARS(ver));
+                     U32CHARS(types[ii]), U32CHARS(ver));
             return 0;
     }
 
+    if (type) {
+        *type = types[ii];
+    }
     if (version) {
         *version = ver;
     }
 
     return 1;
+}
+
+int bdmv_parse_header(BITSTREAM *bs, uint32_t type, uint32_t *version)
+{
+    return bdmv_parse_header2(bs, &type, 1, NULL, version);
 }

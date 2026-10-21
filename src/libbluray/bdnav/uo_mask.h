@@ -52,6 +52,18 @@ static inline BD_UO_MASK uo_mask_get_empty(void)
     return empty.mask;
 }
 
+/* Mask with all operations allowed. Used for formats that have no UO mask. */
+static inline BD_UO_MASK uo_mask_get_all(void)
+{
+    union {
+        uint64_t   u64;
+        BD_UO_MASK mask;
+    } all;
+
+    all.u64 = UINT64_MAX;
+    return all.mask;
+}
+
 BD_PRIVATE int uo_mask_parse(const uint8_t *buf, BD_UO_MASK *uo);
 
 #endif // _BD_UO_MASK_H_

@@ -48,6 +48,8 @@ struct bd_disc {
     char     *disc_root;     /* disc filesystem root (if disc is mounted) */
     char     *overlay_root;  /* overlay filesystem root (if set) */
 
+    bd_disc_format format;   /* application format of the disc */
+
     BD_DEC   *dec;
 
     void         *fs_handle;
@@ -305,6 +307,38 @@ static void _set_paths(BD_DISC *p, const char *device_path)
     }
 }
 
+/*
+ * application format detection
+ *
+ * BDMV discs have a "BDMV" directory with "index.bdmv" in it.
+ * BDAV discs (BD-RE Part 3) have a "BDAV" directory with "index.bdav"
+ * (or "info.bdav") in it.
+ */
+
+static int _have_file(BD_DISC *p, const char *rel_path)
+{
+    BD_FILE_H *fp = p->pf_file_open_bdrom(p->fs_handle, rel_path);
+
+    if (!fp) {
+        return 0;
+    }
+    file_close(fp);
+    return 1;
+}
+
+static void _detect_format(BD_DISC *p)
+{
+    /* BDMV takes precedence: a disc with both is handled as BDMV. */
+    if (_have_file(p, "BDMV" DIR_SEP "index.bdmv")) {
+        return;
+    }
+    if (_have_file(p, "BDAV" DIR_SEP "index.bdav") ||
+        _have_file(p, "BDAV" DIR_SEP "info.bdav")) {
+        p->format = DISC_FORMAT_BDAV;
+        BD_DEBUG(DBG_FILE, "detected BDAV application format\n");
+    }
+}
+
 BD_DISC *disc_open(const char *device_path,
                    fs_access *p_fs,
                    struct bd_enc_info *enc_info,
@@ -347,6 +381,8 @@ BD_DISC *disc_open(const char *device_path,
         BD_DEBUG(DBG_FILE, "%s does not seem to be image file or device node\n", device_path);
     }
 
+    _detect_format(p);
+
     struct dec_dev dev = { p->fs_handle, p->pf_file_open_bdrom, p, (file_openFp)disc_open_path, p->disc_root, device_path };
     p->dec = bdpriv_dec_init(&dev, enc_info, keyfile_path, regs, psr_read, psr_write);
 
@@ -383,6 +419,21 @@ void disc_close(BD_DISC **pp)
 const char *disc_root(BD_DISC *p)
 {
     return p->disc_root;
+}
+
+bd_disc_format disc_format(BD_DISC *p)
+{
+    return p->format;
+}
+
+const char *disc_root_dir(BD_DISC *p)
+{
+    return p->format == DISC_FORMAT_BDAV ? "BDAV" : "BDMV";
+}
+
+char *disc_app_path(BD_DISC *p, const char *subpath)
+{
+    return str_printf("%s" DIR_SEP "%s", disc_root_dir(p), subpath);
 }
 
 const char *disc_volume_id(BD_DISC *p)
@@ -692,7 +743,12 @@ static BD_FILE_H *_open_stream(BD_DISC *disc, BD_FILE_H *fp, const char *file)
 
 BD_FILE_H *disc_open_stream(BD_DISC *disc, const char *file)
 {
-    BD_FILE_H *fp = disc_open_file(disc, "BDMV" DIR_SEP "STREAM", file);
+    BD_FILE_H *fp;
+    char *dir;
+
+    dir = disc_app_path(disc, "STREAM");
+    fp = dir ? disc_open_file(disc, dir, file) : NULL;
+    X_FREE(dir);
 
     return fp ? _open_stream(disc, fp, file) : fp;
 }
@@ -707,7 +763,8 @@ BD_FILE_H *disc_open_path_dec(BD_DISC *p, const char *rel_path)
     for (; *rel_path == DIR_SEP_CHAR; rel_path++) ;
 
     /* check if it's a stream */
-    if (!strncmp(rel_path, "BDMV" DIR_SEP "STREAM", 11)) {
+    if (!strncmp(rel_path, disc_root_dir(p), strlen(disc_root_dir(p))) &&
+        !strncmp(rel_path + strlen(disc_root_dir(p)), DIR_SEP "STREAM", strlen(DIR_SEP "STREAM"))) {
         const char *suf = rel_path + (strlen(rel_path) - 5);
         if (!strcmp(suf, ".m2ts")) { // equal
             fp = _open_stream(p, fp, suf - 5);
@@ -833,14 +890,46 @@ static int _hash_file(BD_DISC *p, const char *dir, const char *file, void *hash)
     return sz > 16;
 }
 
+/* Hash the first file with the given extension in the given directory */
+static int _hash_dir_file(BD_DISC *p, const char *dir, const char *ext, void *hash)
+{
+    BD_DIR_H *dp;
+    BD_DIRENT ent;
+    int res = 0;
+
+    dp = disc_open_dir(p, dir);
+    if (!dp) {
+        return 0;
+    }
+    while (!dir_read(dp, &ent)) {
+        size_t name_len = strlen(ent.d_name);
+        size_t ext_len  = strlen(ext);
+        if (name_len > ext_len && !strcmp(ent.d_name + name_len - ext_len, ext)) {
+            res = _hash_file(p, dir, ent.d_name, hash);
+            break;
+        }
+    }
+    dir_close(dp);
+
+    return res;
+}
+
 int disc_pseudo_id(BD_DISC *p, uint8_t *id/*[20]*/)
 {
     uint8_t h[2][20];
     int i, r = 0;
 
     memset(h, 0, sizeof(h));
-    r += _hash_file(p, "BDMV", "MovieObject.bdmv", h[0]);
-    r += _hash_file(p, "BDMV", "index.bdmv", h[1]);
+    if (disc_format(p) == DISC_FORMAT_BDAV) {
+        r += _hash_file(p, "BDAV", "index.bdav", h[0]);
+        if (!r) {
+            r += _hash_file(p, "BDAV", "info.bdav", h[0]);
+        }
+        r += _hash_dir_file(p, "BDAV" DIR_SEP "PLAYLIST", ".rpls", h[1]);
+    } else {
+        r += _hash_file(p, "BDMV", "MovieObject.bdmv", h[0]);
+        r += _hash_file(p, "BDMV", "index.bdmv", h[1]);
+    }
 
     for (i = 0; i < 20; i++) {
         id[i] = h[0][i] ^ h[1][i];
