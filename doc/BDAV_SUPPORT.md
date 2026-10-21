@@ -5,6 +5,8 @@ BDAV (BD-RE Part 3 "Audio Visual Application Format") は未対応であり、
 `BDMV` というディレクトリ名と `index.bdmv` / `*.mpls` というファイル体系に
 強く依存している。本ドキュメントは BDAV 対応に必要な差分と実装方針をまとめたもの。
 
+> **実装済みの範囲と成果のまとめは [`BDAV_IMPLEMENTATION.md`](BDAV_IMPLEMENTATION.md) を参照。**
+
 本メモの記述は次の 2 出典に基づく。
 
 - 実装済みのコード（libbluray 本体）
