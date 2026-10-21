@@ -198,7 +198,7 @@ BDAV の stream attribute 長 (sci_length) は映像/音声で 3、それ以外�
 | `src/libbluray/bdnav/navigation.c:405` | `nav_get_title_list()` が `BDMV/PLAYLIST` を走査 | ルート依存に |
 | `src/libbluray/bluray.c:2512` | `_open_playlist()` が `"%05u.mpls"` | BDAV は `"%05u.rpls"` |
 | `src/libbluray/bluray.c:2969` | `_get_mpls_info()` が `"%05u.mpls"` | 同上 |
-| `src/libbluray/bluray.c:1056` | `_fill_disc_info()` が `indx_get()` | BDAV index  대응 필요 |
+| `src/libbluray/bluray.c:1056` | `_fill_disc_info()` が `indx_get()` | BDAV index の解析が必要 |
 | `src/libbluray/hdmv/mobj_parse.c:227,233` | `MovieObject.bdmv` | BDAV には無い → 開かないだけでよい |
 | `src/libbluray/bdnav/meta_parse.c:159,185` | `BDMV/META/DL`, `BDMV/META/TN` | BDAV には無い → 開かないだけでよい |
 | `src/libbluray/bdnav/sound_parse.c:228` | `BDMV/AUXDATA/sound.bdmv` | 同上 |
@@ -268,7 +268,7 @@ BDMV 前提で読む。BDAV の AppInfoPlayList は先頭が `00 00 01 00` で�
 `nav_get_title_list()` が title を拾えるときだけ
 "Possible incomplete BluRay image detected. No menu support." として
 `no_menu_support = 1` を立てる (src/libbluray/bluray.c:1057-1066)。
-この経路は BDAV にもそのまま当てはまるので、**menu なし作为一个 BDAV として扱える**。
+この経路は BDAV にもそのまま当てはまるので、**menu を持たない BDAV として扱える**。
 
 再生の入口は `bd_play()` ではなく、
 
@@ -968,7 +968,7 @@ STC 2 個目以降の PlayItem が丸ごと再生不能になっていた。
 **修正**: coarse テーブルが STC 開始点を含まない場合、最後の coarse entry
 から fine table を走査するようにした (fallback)。
 BDMV 側でも同じ状況 (クリップ末尾 11 秒以内の PCR 不連続) で
-同じ不具合的发生していたので、BDMV 側の挙動改善にも繋がる。
+同じ不具合が発生していたので、BDMV 側の挙動改善にも繋がる。
 
 ### 8.4 残作業
 

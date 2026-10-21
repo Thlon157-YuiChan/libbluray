@@ -45,7 +45,7 @@ meson compile -C build       # = ninja -C build
   - `build/src/examples/libbluray_test <dir> [title]` — タイトル選択して
     `streamdump.m2ts` にダンプ (再生の疎通確認)
   - `build/src/devtools/mpls_dump <file.mpls>` / `clpi_dump <file.clpi>` —
-    **单个ファイルのパーサを単体で検証できる**。パーサ改造時は最速の手段。
+    **単一ファイルのパーサを単体で検証できる**。パーサ改造時は最速の手段。
 
 ---
 
@@ -209,11 +209,11 @@ BDAV 側のメタデータは `sorshi/bdav` の writer と同一構造 (chotBDAV
 
 ---
 
-## 其它
+## その他
 
 - `ChangeLog` はリリース時に更新される。
 - ログ出力は `util/log_control.h` の `DBG_*` ビット集合で制御。
-  `bd_debug(NULL, ...)` で fatal 扱いも表达できる。
+  `bd_debug(NULL, ...)` で fatal 扱いも表現できる。
 - `disc_property_get/put()` (disc/properties.c) は
   `~/.cache/bluray/properties/` に永続化されたアプリ側の設定を保存する
   (例: 既知の main feature playlist id)。ディスク ID をキーに使う。
