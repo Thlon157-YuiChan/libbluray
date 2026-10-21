@@ -24,6 +24,7 @@
 #include "util/attributes.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 struct bd_disc;
 struct mpls_pl;
@@ -31,5 +32,11 @@ struct mpls_pl;
 BD_PRIVATE struct mpls_pl *mpls_parse(const char *path);
 BD_PRIVATE struct mpls_pl *mpls_get(struct bd_disc *disc, const char *file);
 BD_PRIVATE void mpls_free(struct mpls_pl **pl);
+
+/* Compose playlist file name for the given playlist id.
+ * BDMV: "00001.mpls". BDAV: "00001.rpls".
+ * Returns number of characters written, or -1 on error. */
+BD_PRIVATE int mpls_filename(struct bd_disc *disc, uint32_t playlist_id,
+                             char *buf, size_t size);
 
 #endif // _MPLS_PARSE_H_

@@ -31,5 +31,7 @@
 #define BDMV_VERSION_0300 ('0' << 24 | '3' << 16 | '0' << 8 | '0')
 
 BD_PRIVATE int bdmv_parse_header(BITSTREAM *bs, uint32_t type, uint32_t *version);
+BD_PRIVATE int bdmv_parse_header2(BITSTREAM *bs, const uint32_t *types, unsigned count,
+                                  uint32_t *type, uint32_t *version);
 
 #endif // _BDMV_PARSE_H_

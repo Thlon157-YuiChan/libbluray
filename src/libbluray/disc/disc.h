@@ -49,6 +49,12 @@ typedef struct fs_access {
 
 typedef struct bd_disc BD_DISC;
 
+/* Application format of the disc */
+typedef enum {
+    DISC_FORMAT_BDMV = 0,   /* Blu-ray Movie (BD-ROM) */
+    DISC_FORMAT_BDAV = 1,   /* Blu-ray Disc Audio/Video (BD-RE Part 3) */
+} bd_disc_format;
+
 BD_PRIVATE BD_DISC *disc_open(const char *device_path,
                               fs_access *p_fs,
                               struct bd_enc_info *enc_info,
@@ -59,6 +65,16 @@ BD_PRIVATE void     disc_close(BD_DISC **);
 
 /* Get BD-ROM root path */
 BD_PRIVATE const char *disc_root(BD_DISC *disc);
+
+/* Get application format of the disc */
+BD_PRIVATE bd_disc_format disc_format(BD_DISC *disc);
+
+/* Get name of the application root directory ("BDMV" or "BDAV") */
+BD_PRIVATE const char *disc_root_dir(BD_DISC *disc);
+
+/* Compose path in the application root directory, e.g. "BDMV/PLAYLIST".
+ * Returns NULL on error. Must be freed with X_FREE(). */
+BD_PRIVATE char *disc_app_path(BD_DISC *disc, const char *subpath);
 
 /* Get UDF volume ID */
 BD_PRIVATE const char *disc_volume_id(BD_DISC *);

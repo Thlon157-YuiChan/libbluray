@@ -40,10 +40,80 @@
 #include <string.h>
 
 #define CLPI_SIG1  ('H' << 24 | 'D' << 16 | 'M' << 8 | 'V')
+#define CLPI_SIG2  ('M' << 24 | '2' << 16 | 'T' << 8 | 'S')
+
+/* BDAV (BD-RE Part 3) clip info files use a different signature and
+ * a different stream coding info layout than BDMV ones. */
+#define _is_bdav(cl) ((cl)->type_indicator == CLPI_SIG2)
 
 static int
-_parse_stream_attr(BITSTREAM *bits, CLPI_PROG_STREAM *ss)
+_parse_stream_attr_bdav(BITSTREAM *bits, CLPI_PROG_STREAM *ss)
 {
+    int64_t pos;
+    int len;
+
+    if (!bs_is_align(bits, 0x07)) {
+        BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_stream_attr_bdav(): Stream alignment error\n");
+    }
+
+    len = bs_read(bits, 8);
+    pos = bs_pos(bits) >> 3;
+
+    ss->lang[0] = '\0';
+    memset(ss->isrc,'\0',12);
+    ss->coding_type = bs_read(bits, 8);
+    switch (ss->coding_type) {
+        case 0x01:
+        case 0x02:
+        case 0xea:
+        case 0x1b:
+        case 0x24:
+            /* video_format | frame_rate, aspect_ratio | reserved */
+            ss->format = bs_read(bits, 4);
+            ss->rate   = bs_read(bits, 4);
+            if (len > 2) {
+                ss->aspect = bs_read(bits, 4);
+                bs_skip(bits, 4);
+            }
+            break;
+
+        case 0x03:
+        case 0x04:
+        case 0x0f:   /* MPEG-2 AAC */
+        case 0x11:   /* LPCM */
+        case 0x80:
+        case 0x81:
+        case 0x82:
+        case 0x83:
+        case 0x84:
+        case 0x85:
+        case 0x86:
+        case 0xa1:
+        case 0xa2:
+            /* audio_presentation_type | sampling_frequency */
+            ss->format = bs_read(bits, 4);
+            ss->rate   = bs_read(bits, 4);
+            break;
+
+        default:
+            BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_stream_attr_bdav(): unrecognized coding type %02x\n", ss->coding_type);
+            break;
+    };
+
+    /* Skip over any padding */
+    if (bs_seek_byte(bits, pos + len) < 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+_parse_stream_attr(BITSTREAM *bits, CLPI_PROG_STREAM *ss, int is_bdav)
+{
+    if (is_bdav) {
+        return _parse_stream_attr_bdav(bits, ss);
+    }
+
     int64_t pos;
     int len;
 
@@ -125,10 +195,13 @@ _parse_stream_attr(BITSTREAM *bits, CLPI_PROG_STREAM *ss)
 static int
 _parse_header(BITSTREAM *bits, CLPI_CL *cl)
 {
-    cl->type_indicator = CLPI_SIG1;
-    if (!bdmv_parse_header(bits, cl->type_indicator, &cl->type_indicator2)) {
+    static const uint32_t types[] = { CLPI_SIG1, CLPI_SIG2 };
+    uint32_t type = 0;
+
+    if (!bdmv_parse_header2(bits, types, 2, &type, &cl->type_indicator2)) {
         return 0;
     }
+    cl->type_indicator = type;
 
     if (bs_avail(bits) < 5 * 32) {
         BD_DEBUG(DBG_NAV | DBG_CRIT, "_parse_header: unexpected end of file\n");
@@ -139,7 +212,13 @@ _parse_header(BITSTREAM *bits, CLPI_CL *cl)
     cl->program_info_start_addr = bs_read(bits, 32);
     cl->cpi_start_addr = bs_read(bits, 32);
     cl->clip_mark_start_addr = bs_read(bits, 32);
-    cl->ext_data_start_addr = bs_read(bits, 32);
+    if (_is_bdav(cl)) {
+        /* BDAV has no extension data area. */
+        cl->ext_data_start_addr = 0;
+        bs_skip(bits, 32);
+    } else {
+        cl->ext_data_start_addr = bs_read(bits, 32);
+    }
     return 1;
 }
 
@@ -263,7 +342,7 @@ _parse_sequence(BITSTREAM *bits, CLPI_CL *cl)
 }
 
 static int
-_parse_program(BITSTREAM *bits, CLPI_PROG_INFO *program)
+_parse_program(BITSTREAM *bits, CLPI_PROG_INFO *program, int is_bdav)
 {
     int ii, jj;
 
@@ -294,7 +373,7 @@ _parse_program(BITSTREAM *bits, CLPI_PROG_INFO *program)
         progs[ii].streams = ps;
         for (jj = 0; jj < progs[ii].num_streams; jj++) {
             ps[jj].pid = bs_read(bits, 16);
-            if (!_parse_stream_attr(bits, &ps[jj])) {
+            if (!_parse_stream_attr(bits, &ps[jj], is_bdav)) {
                 return 0;
             }
         }
@@ -309,7 +388,7 @@ _parse_program_info(BITSTREAM *bits, CLPI_CL *cl)
         return 0;
     }
 
-    return _parse_program(bits, &cl->program);
+    return _parse_program(bits, &cl->program, _is_bdav(cl));
 }
 
 static int
@@ -484,7 +563,24 @@ clpi_lookup_spn(const CLPI_CL *cl, uint32_t timestamp, int before, uint8_t stc_i
         }
     }
     if (ii >= entry->num_ep_coarse) {
-        return cl->clip.num_source_packets;
+        // The coarse table may be sparse: the STC sequence may start
+        // after the last coarse entry. Continue the search from the
+        // last coarse entry.
+        if (entry->num_ep_coarse < 1) {
+            return cl->clip.num_source_packets;
+        }
+        ii = entry->num_ep_coarse - 1;
+        ref = entry->coarse[ii].ref_ep_fine_id;
+        coarse_pts = (uint32_t)(entry->coarse[ii].pts_ep & ~0x01) << 18;
+        start = entry->coarse[ii].ref_ep_fine_id;
+        end = entry->num_ep_fine;
+        for (jj = start; jj < end; jj++) {
+            pts = coarse_pts + ((uint32_t)entry->fine[jj].pts_ep << 8);
+            if (pts > timestamp) {
+                break;
+            }
+        }
+        goto done;
     }
     pts = ((uint64_t)(entry->coarse[ii].pts_ep & ~0x01) << 18) +
           ((uint64_t)entry->fine[ref].pts_ep << 8);
@@ -692,7 +788,7 @@ static int _parse_clpi_extension(BITSTREAM *bits, int id1, int id2, void *handle
         }
         if (id2 == 5) {
             // ProgramInfo SS
-            return _parse_program(bits, &cl->program_ss);
+            return _parse_program(bits, &cl->program_ss, 0);
         }
         if (id2 == 6) {
             // CPI SS
@@ -867,16 +963,25 @@ const CLPI_CL*
 clpi_get(BD_DISC *disc, const char *file)
 {
     const CLPI_CL *cl;
+    char *dir;
 
     cl = disc_cache_get(disc, file);
     if (cl) {
         return cl;
     }
 
-    cl = _clpi_get(disc, "BDMV" DIR_SEP "CLIPINF", file);
+    dir = disc_app_path(disc, "CLIPINF");
+    if (dir) {
+        cl = _clpi_get(disc, dir, file);
+        X_FREE(dir);
+    }
     if (!cl) {
         /* if failed, try backup file */
-        cl = _clpi_get(disc, "BDMV" DIR_SEP "BACKUP" DIR_SEP "CLIPINF", file);
+        dir = disc_app_path(disc, "BACKUP" DIR_SEP "CLIPINF");
+        if (dir) {
+            cl = _clpi_get(disc, dir, file);
+            X_FREE(dir);
+        }
     }
 
     if (cl) {

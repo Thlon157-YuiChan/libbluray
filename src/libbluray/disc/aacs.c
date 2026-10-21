@@ -80,6 +80,13 @@ int bdpriv_aacs_required(void *have_file_handle, int (*have_file)(void *, const 
         return 1;
     }
 
+    /* AACS for recorded content (BDAV). The media key block is stored
+     * in the disc itself. */
+    if (have_file(have_file_handle, "AACS", "MKB_RW.inf")) {
+        BD_DEBUG(DBG_BLURAY, "AACS" DIR_SEP "MKB_RW.inf found. Disc seems to be AACS protected.\n");
+        return 1;
+    }
+
     BD_DEBUG(DBG_BLURAY, "AACS" DIR_SEP "Unit_Key_RO.inf not found. No AACS protection.\n");
     return 0;
 }
