@@ -75,14 +75,17 @@ void bdpriv_aacs_unload(BD_AACS **p)
 
 int bdpriv_aacs_required(void *have_file_handle, int (*have_file)(void *, const char *, const char *))
 {
+    /* AACS for pre-recorded content (BD-ROM) */
     if (have_file(have_file_handle, "AACS", "Unit_Key_RO.inf")) {
         BD_DEBUG(DBG_BLURAY, "AACS" DIR_SEP "Unit_Key_RO.inf found. Disc seems to be AACS protected.\n");
         return 1;
     }
 
     /* AACS for recorded content (BDAV). The media key block is stored
-     * in the disc itself. */
-    if (have_file(have_file_handle, "AACS", "MKB_RW.inf")) {
+     * in the media itself. Depending on the recorder, the directory is
+     * named "AACS" or "AACS_bd". */
+    if (have_file(have_file_handle, "AACS", "MKB_RW.inf") ||
+        have_file(have_file_handle, "AACS_bd", "MKB_RW.inf")) {
         BD_DEBUG(DBG_BLURAY, "AACS" DIR_SEP "MKB_RW.inf found. Disc seems to be AACS protected.\n");
         return 1;
     }

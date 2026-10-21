@@ -714,23 +714,32 @@ python3 tools/bdav_dump.py /mnt/bd/BDAV/PLAYLIST/00000.rpls
 
 #### 6.5.3 AACS の要否
 
-| 対象 | libaacs / libbdplus |
+| 対象 | AACS 復号 |
 |---|---|
-| BDAV 録画ディスク | **不要**。AACS 対象外なので `dec == NULL` の経路で動作する |
+| BDAV 録画ディスクの**メタデータ** | 不要。`index.bdav` / `PLAYLIST` / `CLIPINF` は平文 |
+| BDAV 録画ディスクの**`STREAM/*.m2ts`** | **必要**。録画用 AACS。素の libaacs では復号できず、**libmmbd** が要る (§6.6.2 注意 3) |
 | 市販 BD-ROM (BDMV) のメタデータ | 不要。`index.bdmv` / `MovieObject.bdmv` / `PLAYLIST` / `CLIPINF` は平文 |
 | 市販 BD-ROM の `STREAM/*.m2ts` | **必要**。`LIBAACS_PATH` で指定 (src/libbluray/disc/aacs.c:94) |
 
-BDAV 録画ディスクは AACS が無いため、**BDAV 固有のコードだけ**を
-切り離して検証できる。検証には最良のケース。
+メタデータの解釈は AACS の有無と独立に成立する。
+合成テストデータ (`test/bdav/`) はクリアな TS なので AACS 経路を通らないが、
+実ディスクでは §6.6 の AACS 経路に入ることに注意。
 
 AACS 暗号化の有無は次のように判定する (実ディスクで確認):
 
 ```bash
-ls /mnt/bd/AACS/                # Unit_Key_RO.inf / MKB_RW.inf / AACS_av/ の有無
+ls /mnt/bd/AACS/                # MKB_RO.inf / MKB_RW.inf / Unit_Key_*.inf / AACS_av/
+ls /mnt/bd/AACS_bd/ 2>/dev/null # 録画機によっては AACS_bd/ named directory
+ls /mnt/bd/AACS/AACS_av/        # 録画用: CPSUnit00001.cci / Unit_Key_RW.inf
 # m2ts の TS ヘッダの transport_scrambling_control (offset 3 の下 2 bit) が
 # 0 以外なら暗号化されている
 xxd -l 32 /mnt/bd/BDAV/STREAM/00000.m2ts
 ```
+
+libbluray 自身は TP ヘッダの copy_permission_indicator を見て
+暗号化を検出する (`_validate_unit()`, src/libbluray/bluray.c:714)。
+暗号化されたストリームを読むと `BD_EVENT_ENCRYPTED` が発生するので、
+実ディスクで AACS が効いているかはイベントでも確認できる。
 
 #### 6.5.4 実装前の BDAV ディスクの挙動 (注意)
 
@@ -783,16 +792,30 @@ AACS 経路はフォーマット非依存に実装済み:
 **BDAV でも `disc_open_stream()` が `BDAV/STREAM/xxxxx.m2ts` を開くだけで、
 復号は同一経路を通る。** BDAV 対応で AACS に追加で何かを書く必要はない。
 
-ただし 2 点の注意:
+ただし注意が 3 点ある。
 
-1. **AACS 起動判定が `Unit_Key_RO.inf` のみ** (aacs.c:78)。
-   BDAV 仕様は録画用 AACS ディレクトリに `MKB_RW.inf` を持つと明記している。
-   録画ディスクが `Unit_Key_RO.inf` を持たないなら **AACS 経路が起動せず**、
-   暗号化済みコンテンツが復号されずにそのまま出てしまう。
-   → 実ディスクで確認する (6.5.3 の `ls /mnt/bd/AACS/`)。
-2. **AACS for recorded (MKB_RW) の鍵はディスク自身にある**ので、
-   原理的にはディスクを挿せば復号できる。欠けているのは player 側の鍵ではなく、
-   対応しているかどうか。
+1. **AACS には録画用の別実装が存在する**。
+   AACS LA は「Pre-recorded Video Book」と「Recordable Video Book」を
+   別に定義している。BD-ROM 用は `AACS/MKB_RO.inf` と
+   `AACS/Unit_Key_RO.inf`、録画用は `AACS/MKB_RW.inf` と
+   `AACS/AACS_av/Unit_Key_RW.inf` である。
+   録画機によってはディレクトリ名が `AACS_bd` になる。
+   `bdpriv_aacs_required()` は `AACS/MKB_RW.inf` と
+   `AACS_bd/MKB_RW.inf` を見るようにした (src/libbluray/disc/aacs.c)。
+2. **CAS と AACS は別物**。ISDB-T / ISDB-S の放送波は放送事業社の CAS で
+   スクランブルされているが、チューナー側で復号された後に録画されるので、
+   ディスク上の m2ts に CAS の暗号化は残らない。一方 AACS (録画用) は
+   ディスクへ書き込む時にコンテンツへ暗号化される。
+   つまり「CAS 暗号化は無いが AACS はある」という状態になり得る。
+3. **libaacs は録画用 AACS に対応していない**。
+   libaacs が読むのは `AACS/MKB_RO.inf` / `AACS/Unit_Key_RO.inf` /
+   `AACS/CPSUnit%05d.cci` / `AACS/Content00x.cer` のみである。
+   `MKB_RW.inf` や `Unit_Key_RW.inf`、`AACS_av/` を読むコードは無い
+   (src/libaacs/ に録画用を別に実装した aacs_rd.c のようなものは無い)。
+   録画ディスクに素の libaacs を当てると unit key の読み込みで失敗する。
+   → 録画ディスクを復号するには **libmmbd** (MakeMKV の libaacs 互換実装) が
+   必要。libbluray は既に `libmmbd` を候補としてロードする
+   (`IMPL_LIBMMBD`, src/libbluray/disc/aacs.c)。
 
 #### 6.6.3 BDAV + AACS で塞がっている点 (CPS 選択)
 
@@ -829,23 +852,24 @@ libbluray はそれを 3 経路で処理している:
 
 #### 6.6.4 結論
 
-- **libaacs との組み合わせで視聴は実現可能**。
-  ただし libaacs は「録画ディスクが暗号化されている場合」の保険であって
-  必須ではない。**多くの録画 BDAV ディスクはクリア**なので、
-  実際には libaacs なしで再生できる可能性が高い
+- **録画した BDAV ディスクの視聴は実現可能だが、素の libaacs では復号できない**。
+  日本の BD レコーダーで録画したディスクは AACS (録画用) で暗号化されている
+  ため、復号には **libmmbd** (MakeMKV の libaacs 互換実装) が必要である。
+  libbluray 側の AACS 実装は既に libmmbd を候補としてロードするので、
+  `LIBAACS_PATH` に libmmbd を指定すればそのまま使える。
 - libbluray 側の作業は §4-§5 の BDAV メタデータ対応
   (+ 6.6.3 の CPS 選択、+ 6.6.2 注意 1 の判定緩和) のみ。
   libaacs 本体の改造は不要 (VideoLAN の別プロジェクト。libbluray は dlopen するだけ)
 - 映像表示は player 側の作業。libbluray は「復号済みの TS を流す」ところまで
 
-実測の根拠 (録画 BDAV はクリアである可能性が高い):
+補足: 暗号化される対象は AV コンテンツ (m2ts) であり、BDAV の管理情報
+(`index.bdav` / `PLAYLIST/*.rpls` / `CLIPINF/*.clpi`) は暗号化されない。
+BD-ROM も同じで、BDMV の管理情報は鍵が無くても読める。
+そのためメタデータの解釈 (§4-§5 の作業) は AACS の有無と独立して成立する。
 
-- `sorshi/bdav` は**クリアな TS**を BDAV に包むだけで
-  「家庭用 BD レコーダー/プレーヤー互換」のツリーを生成する。
-  暗号化済みなら再生できないはず
-- 地上デジタル / BS / CS 録画はチューナー側で CAS が解除され、
-  クリアな TS としてディスクに書かれる
-- BD+ は BD-ROM ベースの AACS DRM なので、録画ディスクにはまず無い
+補足: 録画用 AACS のキーはディスク自身に格納されている
+(`MKB_RW.inf` は Type 3 で KCD を含まないため、ディスクの機器鍵から
+Media Key を計算できる)。録画を復号するために外部の鍵を入手する必要は無い。
 
 #### 6.6.5 player 側の契約
 
@@ -904,17 +928,20 @@ README かリリースノートに「BDAV は `bd_get_titles()` 経由で使う�
    タイトル一覧は `PLAYLIST` ディレクトリ走査 (D7) なので、
    どちらのモデルでも同じ結果になるはず。
 
-**追加で検証が必要な項目** (実装時に実ディスクで判断):
+**追加で検証が必要な項目** (実ディスクで確認する):
 
-8. **録画 BDAV のコンテンツが暗号化されているか**
+8. **録画 BDAV の AACS ディレクトリの形**
+   仕様では `AACS/`、実機では `AACS_bd/` Seen 場合がある。
+   録画用の unit key は `AACS/AACS_av/Unit_Key_RW.inf` に置かれる
+   (サブディレクトリ名が `AACS_AV` の録画機もある)。
+   `bdpriv_aacs_required()` は `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を
+   見るので、MKB_RW.inf の位置だけ合わせればよい。
+
+9. **録画 BDAV のコンテンツが暗号化されているか**
    `ls /mnt/bd/AACS/` と m2ts の `transport_scrambling_control` で判定 (§6.5.3)。
-   暗号化されている場合に限り、libaacs 経路の実装 (CPS 選択の是正、
-   判定条件の緩和) が必要になる。クリアなら §4-§5 の作業だけで完結する。
-
-9. **録画 BDAV の AACS ディレクトリに `Unit_Key_RO.inf` があるか**
-   無い場合、`bdpriv_aacs_required()` (src/libbluray/disc/aacs.c:78) が
-   AACS 経路を起動しない。`MKB_RW.inf` も見るよう判定を緩和する必要があるかも
-   (§6.6.2 注意 1)。
+   日本の BD 録画ディスクは録画用 AACS が碰到されている可能性が高い。
+   復号には libmmbd が必要 (§6.6.2 注意 3) なので、
+   実ディスクでの動作確認は libmmbd を組み込んだ状態で行う。
 
 ---
 
@@ -935,7 +962,7 @@ HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 | `src/libbluray/bdnav/navigation.c` | `PLAYLIST` ディレクトリをルート対応化。**BDAV 用の `MPLS_STN` 合成** (CLPI ProgramInfo から video/audio/pg/ig を復元) を追加。チャプター判定を `_pl_is_chapter()` に集約 (BDAV は type 1 と type 4) |
 | `src/libbluray/bdnav/index_parse.c` | BDAV index (`index.bdav` / `info.bdav`) 解析を追加。`TableOfPlayLists` からタイトルを生成 |
 | `src/libbluray/bluray.c` | playlist ファイル名を `mpls_filename()` で生成。BDAV では `no_menu_support = 1` |
-| `src/libbluray/disc/aacs.c` | AACS 判定に `AACS/MKB_RW.inf` (AACS for recorded) を追加 |
+| `src/libbluray/disc/aacs.c` | AACS 判定に録画用 AACS の `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を追加 (§6.6.2 注意 1) |
 | `src/tools/bd_list_titles.c` | 出力の `(playlist: %05d.mpls)` を `(playlist: %05d)` に (拡張子は形式依存) |
 
 ### 8.2 テスト
@@ -972,10 +999,12 @@ BDMV 側でも同じ状況 (クリップ末尾 11 秒以内の PCR 不連続) �
 
 ### 8.4 残作業
 
-- **実物 BDAV ディスクでの検証** (§7 の Q1/Q2/Q3/Q7 が実測で確定する)
+- **実物 BDAV ディスクでの検証** (§7 の Q1/Q2/Q3/Q7/Q8 が実測で確定する)
 - **AACS 経路の検証** (§6.6.3)。BDAV index 解析により
   `disc_info.num_titles` がプレイリスト数になる → `use_menus` は 0 のまま →
   `bdpriv_dec_open_stream()` の `aacs_select_title(aacs, 0xffff)` による
-  手動 CPS リセットが有効になる (§6.6.3 の穴は解消)。ただし暗号化された
-  BDAV ディスクでの動作確認は未実施
+  手動 CPS リセットが有効になる (§6.6.3 の穴は解消)。
+  ただし録画ディスクは AACS (録画用) で暗号化されている可能性が高く、
+  復号には **libmmbd** が必要 (§6.6.2 注意 3) なので、
+  実ディスクの動作確認は libmmbd を組み込んだ状態で行う
 - **HEVC TS / SESF** (§4.0 の対象外)
