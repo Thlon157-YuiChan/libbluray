@@ -1017,6 +1017,39 @@ ec.c / mkb.c / mmc.c / unit_key.c の 8 ファイルで、
 
 1〜4 は既存コードの流用で 100〜200 行程度、5〜6 が実装の本体。
 
+### 7.6.1 libmmbd を実機で検証した結果
+
+libmmbd (MakeMKV の libaacs 兼実実現) を Flathub から入れ、
+実機で検証した結果:
+
+| 項目 | 結果 |
+|---|---|
+| インストール | `com.makemkv.MakeMKV` 2.0.0 を Flathub から入れ (flatpak) |
+| ライブラリ | `files/lib/libmmbd.so.0` |
+| コントロール | `aacs_init` / `aacs_open_device` / `aacs_open2` / `aacs_decrypt_unit` / `aacs_select_title` をエクスポート |
+| libbluray からの読み込み | **成功** (詳明下記) |
+| AACS オープン | **失敗** (error -6 = `AACS_ERROR_MMC_OPEN`) |
+
+**`LIBAACS_PATH` の指定方法** に注意:
+libbluray の `dl_dlopen()` (src/file/dl_posix.c:92) は引数に `".so.0"` を付けるので、
+指定する値は **「.so.0 を除いたパス」** にする。
+「.../libmmbd.so.0」を入れると `.../libmmbd.so.0.so.0` を探し、
+システム入りの libaacs に落としてしまう。
+
+```bash
+export LIBAACS_PATH=/var/lib/flatpak/app/com.makemkv.MakeMKV/x86_64/stable/<hash>/files/lib/libmmbd
+```
+
+**失敗の原因**: libmmbd の `_mmc_check_aacs()` は
+GET CONFIGURATION (feature `010Dh` = AACS) でドライブの AACS 対応を確認するが、
+このドライブは特定フィーチャを返しない。
+ドライブ自体はおるよう (MakeMKV 自身はこのディスクを読めり、
+実際に解決できる) ので、**ブロックは libaacs / libmmbd 側の MMC 対応にとってはない**。
+
+**参考**: MakeMKV 自身ではこのディスクを取り出し、
+投影トラックに有効な AAC フレームが含まれていた (→ 実際に複号できている)。
+ディスク自体とドライブは関係ない。
+
 ### 7.7 実現性評価と代替案
 
 **可能。ただし条件付き**で、決定的なのは **作業 3 (Binding Nonce の drive コマンド)**。
@@ -1036,7 +1069,7 @@ libbluray は既に `libmmbd` を候補としてロードするので、
 
 | 方針 | 内容 | 判断 |
 |---|---|---|
-| **A. 先に libmmbd を試す** | `LIBAACS_PATH` に libmmbd を指定して実ディスクの復号を試す | **最初に試す価値あり**。実装ゼロ |
+| **A. 先に libmmbd を試す** | `LIBAACS_PATH` に libmmbd を指定して実ディスクの復号を試す | **実測結果: ライブラリは読み込めるが AACS 認証が失敗する** (§7.6.1)。実装ゼロで済むとは限らない |
 | **B. libaacs に recordable 対応を追加** | 作業 1〜7。Binding Nonce コマンドが実機で通ることが前提 | 必要になった場合。仕様書は全部公開されているので情報の出所は揃っている |
 | **C. libbluray 側** (済) | BDAV メタデータ解析、AACS 判定 (`MKB_RW.inf`)、STN 合成、チャプター判定 | 完了済み。復号部分は A/B に委ねる |
 
