@@ -252,20 +252,20 @@ _pl_duration(const MPLS_PL *pl)
 /*
  * Chapter marks
  *
- * BDMV uses "entry" mark (type 1) for chapters. BDAV uses mark type 4
- * for chapter marks and type 1 for the resume point.
+ * BDMV uses "entry" mark (type 1) for chapters.
+ * BDAV uses mark type 3 for the title start and types 4 and 5 for chapters.
+ * Type 4 is used by the reference authoring tools, type 5 by the recorders
+ * measured so far.
  */
 
 static int
 _pl_is_chapter(const MPLS_PL *pl, const MPLS_PLM *plm)
 {
-    if (plm->mark_type == BD_MARK_ENTRY) {
-        return 1;
+    if (pl->is_bdav) {
+        return plm->mark_type == BD_MARK_CHAPTER ||
+               plm->mark_type == BD_MARK_SECTION;
     }
-    if (pl->is_bdav && plm->mark_type == BD_MARK_CHAPTER) {
-        return 1;
-    }
-    return 0;
+    return plm->mark_type == BD_MARK_ENTRY;
 }
 
 static uint32_t

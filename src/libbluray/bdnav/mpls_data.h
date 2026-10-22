@@ -25,9 +25,11 @@
 
 #include <stdint.h>
 
-#define BD_MARK_ENTRY   0x01
-#define BD_MARK_LINK    0x02
-#define BD_MARK_CHAPTER 0x04  /* BDAV: chapter mark */
+#define BD_MARK_ENTRY    0x01
+#define BD_MARK_LINK     0x02
+#define BD_MARK_TITLE    0x03   /* BDAV: title start */
+#define BD_MARK_CHAPTER  0x04   /* BDAV: chapter mark */
+#define BD_MARK_SECTION  0x05   /* BDAV: section boundary (chapter mark) */
 
 typedef struct
 {

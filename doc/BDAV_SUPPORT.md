@@ -379,16 +379,20 @@ BDMV 対応は「分岐を足す」だけで、既存挙動を一切変えない
 
 一方 `mark_list` は全マークが入る (`navigation.c:621`)。chap_list と mark_list は別系統。
 
-**BDAV 実運用の mark_type 内訳** (生成ツールの観測 + chotBDAV 互換出力):
+**BDAV 実運用の mark_type 内訳**:
 
-| mark_type | maker | 意味 |
-|---|---|---|
-| 4 | Sony 0x0108 | **チャプター** (300 秒間隔、番組先頭も type 4) |
-| 1 | Sony 0x0108 | レジューム点 (IN + 10 秒) |
-| 5 | 0x0000 | PCR 不連続点 (後続 PlayItem の先頭) |
+| mark_type | maker | 意味 | 根拠 |
+|---|---|---|---|
+| 3 | Sharp 0x0107 | **タイトル開始点** (常に IN_time に 1 個) | 実機測定 (6 録画すべて) |
+| 5 | Sharp 0x0107 | **チャプター** (録画内容の途中にも現れる) | 実機測定 |
+| 1 | Sharp 0x0107 | タイトル開始点付近 (6 個中 2 個に出現) | 実機測定 |
+| 4 | Sony 0x0108 | **チャプター** (300 秒間隔) | 生成ツールの観測 (chotBDAV 互換) |
+| 1 | Sony 0x0108 | レジューム点 (IN + 10 秒) | 生成ツールの観測 |
+| 5 | 0x0000 | PCR 不連続点 | 生成ツールの観測 |
 
-**決定: BDAV モードでは type 1 と type 4 の両方をチャプターとして数える。**
-(実運用では type 1 は 1 本しか無いので「先頭に 1 個余る」程度のノイズ)
+**決定 (実機測定で更新): BDAV モードでは type 4 と type 5 をチャプターとして数える。**
+type 1 と type 3 はタイトル開始点系なので数えない。
+(実機測定の詳細は §8.0)
 
 **影響範囲** (type 1 のみのままにした場合):
 
@@ -412,7 +416,7 @@ BDMV 対応は「分岐を足す」だけで、既存挙動を一切変えない
 | ref_to_PlayItem_id | `play_item_ref` | ✓ |
 | mark_time_stamp | `time` | ✓ |
 | entry_ES_PID | `entry_es_pid` | ✓ |
-| (duration フィールドなし) | `duration` | 0 でよい。`_extrapolate_title()` は隣接章との差から chapter duration を計算するので、type 4 の 300 秒間隔がそのまま章長になる |
+| (duration フィールドなし) | `duration` | 0 でよい。`_extrapolate_title()` は隣接章との差から chapter duration を計算する |
 
 `MPLS_PLM` に `maker_id` を追加して保存する (BDMV 側は 0 を入れるだけなので BDMV 影響ゼロ)。
 これが無いと「仕様判明後に判定を変える」余地が失われる。
@@ -1053,64 +1057,151 @@ libbluray は既に `libmmbd` を候補としてロードするので、
 
 ---
 
-## 8. 未確定事項 (実装前に詰める)
+## 8. 実機での検証結果と未確定事項
 
-**決定済み** (§4.3 / §4.4):
+### 8.0 実機検証 (2019-10 録画ディスク, Sharp 機)
 
-- Q2 `mark_type` の意味 → **type 1 と type 4 をチャプター扱い**。判定は helper に集約し、
+実物の録画 BDAV ディスク (BD-R / BD-RE, Sharp 製レコーダー,
+2019-09-02 〜 2019-11-01 の録画 6 本) で検証した結果。
+
+#### ディスクの構成 (実測)
+
+```
+/media/cdrom0/
+  AACS/
+    AACS_av/
+      CPSUnit00001.cci ... CPSUnit00006.cci   (2048 byte ずつ)
+      Unit_Key_RW.inf                          (65536 byte)
+    MKB_RW.inf                                 (13816 byte)
+  BDAV/
+    info.bdav                 (2332 byte)
+    menu.tidx / menu.tdt1 / menu.tdt2
+    mark.tidx / mark.tdt1 / mark.tdt2
+    PLAYLIST/00001.rpls ... 00006.rpls
+    CLIPINF/00001.clpi ... 00006.clpi
+    STREAM/00001.m2ts ... 00006.m2ts          (合計 4.6 GB)
+```
+
+**AACS LA の仕様書の図 (§7.3) と完全に一致した。** 特に:
+
+- index ファイルの実名は **`info.bdav`** (`index.bdav` ではない) → Q1 解決
+- AACS ディレクトリ名は `AACS` ( Recorder によって `AACS_bd` になる事的 Recorded)
+- 録画用 unit key は `AACS/AACS_av/Unit_Key_RW.inf` → §7.2 の構成通り
+- **backup ディレクトリは存在しない** (Q3: `BDAV1/` も `BACKUP/` も無い)
+
+#### libbluray の動作 (実測)
+
+| 項目 | 結果 |
+|---|---|
+| ディスク検出 | ✓ BDAV と判定 |
+| index 解析 | ✓ `info.bdav` の TableOfPlayLists から 6 タイトルを生成 |
+| タイトル列挙 | ✓ 6 本すべて。長さも CLPI の presentation time と一致 |
+| STN 合成 | ✓ 映像 1 本 / 音声 1〜2 本を CLPI から復元 |
+| チャプター判定 | ✓ §8.0.1 の通り実データと一致 |
+| AACS 判定 | ✓ `MKB_RW.inf` を検出して AACS 保護と判定 |
+| 復号 | ✗ 素の libaacs は録画用 AACS に対応していないため失敗 (想定通り) |
+| 暗号化検出 | ✓ `_validate_unit()` が暗号化されたユニットを検出して読み飛ばす |
+
+#### 8.0.1 チャプター判定の確定 (Q2)
+
+実ディスク 6 本の mark_type 分布:
+
+| プレイリスト | 長さ | mark_type | チャプター数 (実装後) |
+|---|---|---|---|
+| 00001 | 00:04:43 | 5@IN, 3@IN, 1@IN | 1 |
+| 00002 | 00:20:39 | 5×2 (中間), 3@IN | 2 |
+| 00003 | 00:56:07 | 5×9 (中間), 3@IN | 9 |
+| 00004 | 00:25:07 | 5 (中間), 3@IN | 1 |
+| 00005 | 00:07:33 | 3@IN のみ | 0 |
+| 00006 | 00:29:13 | 5@IN, 3@IN, 1@IN | 1 |
+
+**規則**: type 3 は常にタイトル開始点 (IN_time に 1 個)。
+type 5 は録画内容の途中に現れる区切りマークで、実機ではチャプターとして扱う。
+type 1 はタイトル開始点付近にのみ現れる。
+
+→ 実装は **type 4 と type 5 をチャプター扱い** に変更した (maker_id は
+BDMV 側との互換のため保存のみ、判定には使わない)。
+
+**残る不確実性**: type 5 の規格上の厳密な定義は BD-RE Part 3 の
+"BDAV" 仕様書 (AACS LA の Book ではない) を参照していない。
+また maker によって type の使い方が変わる可能性があるため、
+mark_type / maker_id の分布をログに出して観測できるようにしておく。
+
+#### 8.0.2 暗号化の確認
+
+`STREAM/00001.m2ts` の先頭を直接調べたところ:
+
+- 先頭パケットの TS ヘッダ (sync 0x47, PID 0x0110 = PAT) は平文
+- 2 番目のパケット以降は sync バイトが 0x47 ではない (ランダム値)
+- CRYPT の配置は AACS 仕様どおり: **Aligned Unit の先頭 16 バイトが平文
+  (seed)、残り 6128 バイトが暗号化**
+
+libbluray の `_validate_unit()` はこの状態Aware で、
+暗号化されたユニットを検出すると読み飛ばすので、
+**復号できない環境では誤ったデータを出力しない** (安全な失敗)。
+
+### 8.1 決定済み
+
+- Q1 index ファイル名 → 実機では **`info.bdav`**。実装は `index.bdav` と
+  `info.bdav` の両方を受理している (§5-B)
+- Q2 `mark_type` の意味 → 実測で確定。**type 4 と type 5 をチャプター扱い**、
+  type 1 と type 3 はタイトル開始点。判定は helper に集約し、
   mark_type / maker_id の分布をログ出力。`MPLS_PLM` に `maker_id` を追加して保存。
-  仕様確定を待たずに実装可能。
+- Q3 backup ディレクトリ → 実機には無い。`BACKUP/PLAYLIST` は対応済み、
+  `BDAV1/` は未対応 (実機では未遭遇)
 - Q4 `bd_play()` の BDAV 挙動 → **(a) 何もしない**。app / player に
   `bd_get_titles()` → `bd_select_title()` の契約を委ねる。
+- Q7 1 録画 = 1 タイトルか → 実機では **1 録画 = 1 `.rpls` = 1 タイトル**。
+  タイトル一覧は `PLAYLIST` ディレクトリ走査 (D7) なので同じ結果になる
+- Q8 AACS ディレクトリの形 → 実機では `AACS/` + `AACS_av/`。
+  `AACS_bd/` は未遭遇だが判定は両対応にしてある
 
 **未確定** (いずれも実装を止めない):
 
-1. **index ファイル名の正体**
-   仕様 (BD-RE Part 3) は `index.bdav`、
-   実装済みの生成ツール (sorshi/bdav) は `info.bdav` を使う。
-   両方を受け付ける (Q1 / §1.2)。
-
-2. **`.vpls` の意味**
+1. **`.vpls` の意味**
    blu-ray.org.uk の記述は `PLAYLIST` に `xxxxx.vpls` もありとしているが、
    文面は `xxxxx.mpls` の写し間違いの疑いがある。
    実ファイル命名は `.rpls` が事実上の標準。**対象外**。
 
-3. **PlayItem の厳密なビットレイアウト**
+2. **PlayItem の厳密なビットレイアウト**
    上記の「バイト境界 20 バイト」表記は chotBDAV 互換の実出力からの逆解析に基づく。
+   実機 (Sharp 機) でも同じ構造で解析できたので整合している。
    BD-RE Part 3 の正本 (該当章) と照合して確定したい。
    逆解析結果が実機と食い違っても、PlayItem は `clip_id` / `IN` / `OUT` だけ読めば
    再生は成立する (STN は CLPI 由来) ので影響は限定的。
 
+3. **mark type 5 の厳密な定義**
+   実機測定では type 5 が録画内容の区切りマークとして使われている (§8.0.1)。
+   AACS LA の Book ではなく、BD-RE Part 3 (BDAV) の仕様書の定義を確認することが必要。
+
 4. **BD-J / メニュー**
    BDAV には BD-J も HDMV メニューも無い、という前提。
-   一部の刻録機が書き出す BDAV に MovieObject 相当が含まれる可能性は否定できない。
+   一部の刻録機が書き出す BDAV に MovieObject 相当が含まれる可能性まで否定できない。
 
 5. **HEVC TS モードの index / playlist が別形式か**
    §4.0 の前提 (HDMV TS と HEVC TS でメタデータ構造が共通) が成り立つか。
    BD-RE Part 3 v5.0 の正本参照が必要。**HDMV TS の実装自体には影響しない。**
 
-6. **backup ディレクトリ名**
-   仕様は `BDAV1/`, `BDAV2/`, 生成ツールは `BACKUP/`。両方を受け付ける。
+6. **`BDAV1/` 形式の backup ディレクトリ**
+   実機には backup が無かった。仕様は `BDAV1/`, `BDAV2/`。
+   マルチボリュームの録画ディスクで遭遇する可能性がある。
 
 7. **BDAV の 1 録画 = 1 タイトルか**
-   基本は 1 録画 = 1 `.rpls`。実機では 1 チャンネルに複数番組がある場合も。
-   タイトル一覧は `PLAYLIST` ディレクトリ走査 (D7) なので、
-   どちらのモデルでも同じ結果になるはず。
+   実機では 1 録画 = 1 `.rpls` = 1 タイトルだった (Q7 解決済み、§8.1)。
+   1 チャンネルに複数番組を録った場合は、録画側が複数の `.rpls` に分けるか
+   1 つの `.rpls` に複数チャプター (type 5) として記録する。
+   実機の 00003 は 56 分の 1 本の録画に 9 個の type 5 マークがあり、
+   後者の形式だった。
 
-**追加で検証が必要な項目** (実ディスクで確認する):
+**実ディスクで確認済みの項目** (§8.0):
 
-8. **録画 BDAV の AACS ディレクトリの形**
-   仕様では `AACS/`、実機では `AACS_bd/` Seen 場合がある。
-   録画用の unit key は `AACS/AACS_av/Unit_Key_RW.inf` に置かれる
-   (サブディレクトリ名が `AACS_AV` の録画機もある)。
+8. **録画 BDAV のコンテンツが暗号化されているか** → **確認済み。暗号化されている。**
+   AACS ディレクトリは `AACS/` + `AACS_av/`、MKB は `AACS/MKB_RW.inf`、
+   録画用 unit key は `AACS/AACS_av/Unit_Key_RW.inf`、
+   CPS Unit Usage File は `AACS/AACS_av/CPSUnit0000x.cci` (6 個)。
+   復号には libmmbd が必要 (§7.6 / §7.7)。
    `bdpriv_aacs_required()` は `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を
-   見るので、MKB_RW.inf の位置だけ合わせればよい。
-
-9. **録画 BDAV のコンテンツが暗号化されているか**
-   `ls /mnt/bd/AACS/` と m2ts の `transport_scrambling_control` で判定 (§6.5.3)。
-   日本の BD 録画ディスクは録画用 AACS が碰到されている可能性が高い。
-   復号には libmmbd が必要 (§6.6.2 注意 3) なので、
-   実ディスクでの動作確認は libmmbd を組み込んだ状態で行う。
+   見るので実機でも正しく AACS 保護と判定される。
 
 ---
 
@@ -1126,9 +1217,9 @@ HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 | `src/libbluray/bdnav/bdmv_parse.c` / `.h` | `bdmv_parse_header2()` を追加 (複数シグネチャ受理)。既存 `bdmv_parse_header()` はそのラッパ |
 | `src/libbluray/bdnav/clpi_parse.c` | `M2TS0100` (BDAV) シグネチャ受理。BDAV 用 stream attribute 解析 (ISRC 無し・最大 3 byte・言語コード無し) を追加。BDMV には extension data が無いので 0x18 は reserved 扱い。`clpi_lookup_spn()` に **coarse テーブルが STC 開始点を含まない場合の fallback** を追加 (§9.3) |
 | `src/libbluray/bdnav/mpls_parse.c` | `PLST0100` (BDAV) シグネチャ受理。BDAV 用 PlayItem (byte-aligned 20 byte) / PlayListMark (46 byte/件・maker_id 保存) 解析を追加。`MPLS_PLM.maker_id` を追加。`mpls_filename()` を追加 (`.mpls` / `.rpls`) |
-| `src/libbluray/bdnav/mpls_data.h` | `MPLS_PL.is_bdav` / `MPLS_PLM.maker_id` / `BD_MARK_CHAPTER` を追加 |
+| `src/libbluray/bdnav/mpls_data.h` | `MPLS_PL.is_bdav` / `MPLS_PLM.maker_id` / `BD_MARK_TITLE` / `BD_MARK_CHAPTER` / `BD_MARK_SECTION` を追加 |
 | `src/libbluray/bdnav/uo_mask.h` | `uo_mask_get_all()` を追加 (UO mask を持たない形式用) |
-| `src/libbluray/bdnav/navigation.c` | `PLAYLIST` ディレクトリをルート対応化。**BDAV 用の `MPLS_STN` 合成** (CLPI ProgramInfo から video/audio/pg/ig を復元) を追加。チャプター判定を `_pl_is_chapter()` に集約 (BDAV は type 1 と type 4) |
+| `src/libbluray/bdnav/navigation.c` | `PLAYLIST` ディレクトリをルート対応化。**BDAV 用の `MPLS_STN` 合成** (CLPI ProgramInfo から video/audio/pg/ig を復元) を追加。チャプター判定を `_pl_is_chapter()` に集約 (BDAV は type 4 と type 5) |
 | `src/libbluray/bdnav/index_parse.c` | BDAV index (`index.bdav` / `info.bdav`) 解析を追加。`TableOfPlayLists` からタイトルを生成 |
 | `src/libbluray/bluray.c` | playlist ファイル名を `mpls_filename()` で生成。BDAV では `no_menu_support = 1` |
 | `src/libbluray/disc/aacs.c` | AACS 判定に録画用 AACS の `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を追加 (§6.6.2 注意 1) |
@@ -1152,6 +1243,11 @@ meson compile -C build
 
 実測結果: BDAV / BDMV とも全項目 PASS。読み出した m2ts は元と md5 一致。
 
+### 9.2.1 実機での検証 (シャープ製レコーダーの録画 BDAV ディスク)
+
+実物の録画 BDAV ディスク (Sharp 製レコーダー, 2019-09 → 11 の録画 6 本) で検証した結果は詳明のとおり (BDAV ディスクの構成、マーク種別の実測値、
+AACS の登録判定、読み出しの動作を含めり。
+
 ### 9.3 実装中に判明した BDMV 共通の実装不具合
 
 `clpi_lookup_spn()` (src/libbluray/bdnav/clpi_parse.c) は、STC シーケンスの
@@ -1168,12 +1264,13 @@ BDMV 側でも同じ状況 (クリップ末尾 11 秒以内の PCR 不連続) �
 
 ### 9.4 残作業
 
-- **実物 BDAV ディスクでの検証** (§8 の Q1/Q2/Q3/Q7/Q8 が実測で確定する)
-- **AACS 経路の検証** (§6.6.3)。BDAV index 解析により
-  `disc_info.num_titles` がプレイリスト数になる → `use_menus` は 0 のまま →
-  `bdpriv_dec_open_stream()` の `aacs_select_title(aacs, 0xffff)` による
-  手動 CPS リセットが有効になる (§6.6.3 の穴は解消)。
-  ただし録画ディスクは AACS (録画用) で暗号化されている可能性が高く、
-  復号には **libmmbd** が必要 (§6.6.2 注意 3) なので、
-  実ディスクの動作確認は libmmbd を組み込んだ状態で行う
+- **AACS 復号経路の検証** (§7.6 / §7.7)。実機で確認した結果、録画ディスクは
+  AACS (録画用) で暗号化されている。素の libaacs は録画用に対応していないため
+  復号に失敗する。復号には **libmmbd** (MakeMKV の libaacs 互換実装) が必要。
+  libbluray は既に `libmmbd` を候補としてロードするので、`LIBAACS_PATH` に
+  指定するだけで動作するはず (未検証)
+- **type 5 の意味の確定** (§8.1 の未確定 3)。BD-RE Part 3 (BDAV) の仕様書参照。
+  実測では type 5 が録画内容の区切りマークとして使われている
 - **HEVC TS / SESF** (§4.0 の対象外)
+- **`BDAV1/` 形式の backup ディレクトリ** (§8.1 の未確定 6)。
+  マルチボリュームの録画ディスクで遭遇する可能性がある

@@ -189,8 +189,10 @@ NAV_TITLE が所有し、タイトル close 時にまとめて解放される。
   ProgramInfo から合成**している (`navigation.c` の `_stn_from_clpi()`)。
 - **UO mask は BDAV には無い**ので `uo_mask_get_all()` (全許可) を使う。
   0 にするとシーク・停止まで塞がる (`uo_mask.h` は OR 合成・1=許可)。
-- **チャプター判定は type 1 だけでは無い**。BDAV は type 4 をチャプターに使う
-  ので `_pl_is_chapter()` に集約している (BDAV は type 1 と type 4 の両方)。
+- **チャプター判定は type 1 だけでは無い**。BDAV は type 4 と type 5 をチャプターに使う
+  ので `_pl_is_chapter()` に集約している (BDAV は type 4 と type 5)。
+  実機測定 (Sharp 機の録画ディスク) では type 3 がタイトル開始点、
+  type 5 が録画内容の区切りマーク、type 1 はタイトル開始点付近に出現する。
 - 未対応: **HEVC TS** (BDAV v5.0) と **SESF**。メタデータ構造は HEVC TS と
   共通の可能性が高いが、HEVC TS モードの index/playlist が別形式かは未確認。
 
