@@ -67,10 +67,10 @@ BDMV との対応表:
 0x10  reserved (0x18 まで)
 0x28  u32  UIAppInfoBDAV.length
 0x2C  UIAppInfoBDAV
-        +0x00  u32  予約 (概ね 00 00 01 00)
+        +0x00  u32  与約 (概ね 00 00 01 00)
         +0x04  char[4] 文字セット (例 "0000")
         +0x08  char[10] 名称
-        +0x12  u16 予約
+        +0x12  u16 与約
       (0x28+4+length から TableOfPlayLists までは 0 パディング)
 tbl   u32  TableOfPlayLists.length
 tbl+4 u16  num_of_PlayLists
@@ -1238,11 +1238,95 @@ libbluray の `_validate_unit()` はこの状態Aware で、
 
 ---
 
-## 9. 実装状況 (2026-10)
+## 9. libaacs 側の変更 (録画用 AACS の実装)
+
+録画ディスクのコンテンツは AACS (録画用) で暗号化されている。
+libbluray 自体の読み出しは対応できるので、録画用 AACS の対応は
+libaacs 側に実装することになる。
+
+### 9.1 実測で確認したファイル構成
+
+```
+AACS/
+  MKB_RW.inf                       (13816 byte)  記録用 MKB (Type 3)
+  AACS_av/
+    Unit_Key_RW.inf                (65536 byte)  CPS Unit Key File
+    CPSUnit00001.cci ... 00006.cci  (2048 byte)  CPS Unit Usage File (= Usage Rules)
+BDAV/
+  PLAYLIST/00001.rpls ... 00006.rpls
+  CLIPINF/00001.clpi ... 00006.clpi
+  STREAM/00001.m2ts ... 00006.m2ts
+```
+
+実測した値:
+
+| ファイル | 位置 | 注意 |
+|---|---|---|
+| `MKB_RW.inf` | `AACS/` | MKB レコード。長さはレコード全体を含む |
+| `Unit_Key_RW.inf` | `AACS/AACS_av/` | `Unit_Key_Block_start_address` = 0x40、鍵は 48 バイト ステップで並ぶ (既存の unit key パーサをそのまま利用できる) |
+| `CPSUnit0000x.cci` | `AACS/AACS_av/` | Primary Header (16) + Primary CCI Area (2032) + Secondary Header (16) + Secondary CCI Area |
+
+`Unit_Key_RW.inf` のヘッダーは BDMV と同じレイアウト (位置 0x00 の 4 バイトが
+鍵の開始位置、鍵は 48 バイト ステップ) なので、既存の parser をそのまま利用できる。
+
+### 9.2 実装した変更 (libaacs)
+
+| ファイル | 変更 |
+|---|---|
+| `crypto.c` / `.h` | **AES-H** を実装 (Common Book 2.1.4 節)。SHA-1 風パディングと AES-G の反復 |
+| `mmc.c` / `.h` | **Binding Nonce の読取** を追加 (REPORT KEY, Key Class 02, Key Format `1000012`)。AACS feature descriptor を報告しないドライブを非致命に変更 |
+| `aacs.c` | `AACS/MKB_RW.inf` と `AACS/AACS_av/Unit_Key_RW.inf` の対応、`AACS/AACS_av/CPSUnit%05d.cci` の対応、**Kpa = AES-G(Mk, Binding Nonce)** の対応、**Kt = AES-128D(Kpa, Kte) XOR AES-H(Usage Rules)** の対応、MKB レコードの最終レコード読み込みの修正 |
+
+### 9.3 実機での到達点
+
+録画ディスクを実機で、改造前後の到達点:
+
+| 前 | 後 |
+|---|---|
+| `Unit_Key_RO.inf` が見つからず open 失敗 | `AACS/AACS_av/Unit_Key_RW.inf` を読み、**6 個の CPS unit key** を解析、タイトルと CPS unit の対応表を確定 |
+| MKB を読まない | `AACS/MKB_RW.inf` を読み (Type 3)、MKB の最終レコードの読み込みを修正 |
+| AACS feature descriptor 未報告で open 失敗 | 非致命に変更し、鍵の取得時に判定 |
+| 構造が理解できない | 録画用構造に合わせて AES-H(Usage Rules) を差し引くよう実装 |
+
+### 9.4 残る課題 (Device Key)
+
+実機では **Media Key の計算で止まる**。Media Key は MKB と Device Key から
+求めるが、Device Key は keydb.cfg に入っており、libaacs はライセンス供与のために
+それを必要とする。通常の libaacs 利用と同じステップであって、録画用だけの
+特殊性はない。
+
+そのため、実機ではドライブ (MATSHITA BD-MLT UJ272) の Device Key を
+keydb.cfg に記録して AACS 認証を行う必要がある。
+
+### 9.5 ビルドと実行
+
+libaacs は autotools でビルドするが、この環境には flex / bison がなく
+keydbcfg のパーサーを生成できない。テスト用にはスタブに置き換える。
+
+```bash
+# 開発ファイル (通常の dev package は Debian のミラーから取得できる)
+apt download libgcrypt20-dev libgpg-error-dev
+dpkg-deb -x libgcrypt20-dev_*.deb dev/ && dpkg-deb -x libgpg-error-dev_*.deb dev/
+
+# ソースをコピーしてビルド
+gcc -shared -fPIC -O2 -o libaacs.so \
+  -I. -Isrc -Isrc/libaacs -Isrc/file -Isrc/util -Idev/usr/include \
+  src/libaacs/aacs.c src/libaacs/cci.c src/libaacs/content_cert.c src/libaacs/crypto.c \
+  src/libaacs/mk.c src/libaacs/mkb.c src/libaacs/mmc.c src/libaacs/unit_key.c \
+  src/file/dirs_xdg.c src/file/file.c src/file/file_posix.c src/file/filesystem.c \
+  src/file/keydbcfg.c src/file/mmc_device_linux.c src/file/path.c \
+  src/util/logging.c src/util/strutl.c \
+  -DHAVE_CONFIG_H=1 /usr/lib/x86_64-linux-gnu/libgcrypt.so.20 /usr/lib/x86_64-linux-gnu/libgpg-error.so.0
+
+# 使用する (libbluray が ".so.0" を付けるので ".so.0" を除いたパスで指定する)
+export LIBAACS_PATH=/path/to/libaacs
+```
+
+## 10. 実装状況 (2026-10)
 
 HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 
-### 9.1 実装済みの変更
+### 10.1 実装済みの変更
 
 | ファイル | 変更内容 |
 |---|---|
@@ -1258,7 +1342,7 @@ HDMV TS プレイモードを主軸として BDAV 読み出しを実装済み。
 | `src/libbluray/disc/aacs.c` | AACS 判定に録画用 AACS の `AACS/MKB_RW.inf` と `AACS_bd/MKB_RW.inf` を追加 (§6.6.2 注意 1) |
 | `src/tools/bd_list_titles.c` | 出力の `(playlist: %05d.mpls)` を `(playlist: %05d)` に (拡張子は形式依存) |
 
-### 9.2 テスト
+### 10.2 テスト
 
 `test/bdav/` に合成テストディスク生成と回帰確認スクリプトを追加した。
 
@@ -1276,7 +1360,7 @@ meson compile -C build
 
 実測結果: BDAV / BDMV とも全項目 PASS。読み出した m2ts は元と md5 一致。
 
-### 9.2.1 実機での検証 (シャープ製レコーダーの録画 BDAV ディスク)
+### 10.2.1 実機での検証 (シャープ製レコーダーの録画 BDAV ディスク)
 
 実物の録画 BDAV ディスク (Sharp 製レコーダー, 2019-09 → 11 の録画 6 本) で検証した結果は詳明のとおり (BDAV ディスクの構成、マーク種別の実測値、
 AACS の登録判定、読み出しの動作を含めり。
@@ -1295,7 +1379,7 @@ STC 2 個目以降の PlayItem が丸ごと再生不能になっていた。
 BDMV 側でも同じ状況 (クリップ末尾 11 秒以内の PCR 不連続) で
 同じ不具合が発生していたので、BDMV 側の挙動改善にも繋がる。
 
-### 9.4 残作業
+### 10.4 残作業
 
 - **AACS 復号経路の検証** (§7.6 / §7.7)。実機で確認した結果、録画ディスクは
   AACS (録画用) で暗号化されている。素の libaacs は録画用に対応していないため
