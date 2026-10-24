@@ -65,6 +65,7 @@ _parse_stream_attr_bdav(BITSTREAM *bits, CLPI_PROG_STREAM *ss)
     switch (ss->coding_type) {
         case 0x01:
         case 0x02:
+        case 0x06:   /* video (BDAV) */
         case 0xea:
         case 0x1b:
         case 0x24:
@@ -79,6 +80,7 @@ _parse_stream_attr_bdav(BITSTREAM *bits, CLPI_PROG_STREAM *ss)
 
         case 0x03:
         case 0x04:
+        case 0x0d:   /* audio (BDAV) */
         case 0x0f:   /* MPEG-2 AAC */
         case 0x11:   /* LPCM */
         case 0x80:

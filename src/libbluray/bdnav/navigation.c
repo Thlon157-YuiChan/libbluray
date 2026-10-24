@@ -66,6 +66,7 @@ _stn_stream_class(uint8_t coding_type)
         case BD_STREAM_TYPE_VIDEO_H264:
         case BD_STREAM_TYPE_VIDEO_HEVC:
         case BD_STREAM_TYPE_VIDEO_VC1:
+        case 0x06:   /* video (BDAV) */
             return STN_CLASS_VIDEO;
 
         case BD_STREAM_TYPE_AUDIO_MPEG1:
@@ -79,6 +80,7 @@ _stn_stream_class(uint8_t coding_type)
         case BD_STREAM_TYPE_AUDIO_DTSHD_MASTER:
         case 0x0f:   /* MPEG-2 AAC */
         case 0x11:   /* LPCM */
+        case 0x0d:   /* audio (BDAV) */
         case 0xa1:
         case 0xa2:
             return STN_CLASS_AUDIO;
