@@ -41,3 +41,4 @@ hdmv_test
 src/libbluray/bdj/build
 stamp-h1
 .wraplock
+WRAPPER_REQUIREMENTS.md
