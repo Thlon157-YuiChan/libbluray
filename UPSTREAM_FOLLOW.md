@@ -1,13 +1,18 @@
 # Upstream 追従手順 (code.videolan.org)
 
+## 前提
+
+- Debian 13 (trixie) 環境を想定
+- git, meson, ninja が利用可能であること
+- GitHub CLI (gh) が認証済みであること
+
 ## libbluray
 
 ### 追従手順
 
 ```bash
-cd ~/dev/libbluray
-
 # 1. upstream の最新を取得
+cd <libbluray-source-dir>
 git fetch origin
 
 # 2. 新規コミットがあるか確認
@@ -30,7 +35,7 @@ git push github feature/bdav-hdmv-ts --force-with-lease
 ### 追従手順
 
 ```bash
-cd ~/dev/libaacs
+cd <libaacs-source-dir>
 
 # 1. upstream の最新を取得
 git fetch origin
@@ -38,7 +43,7 @@ git fetch origin
 # 2. 新規コミットがあるか確認
 git log --oneline HEAD..origin/master
 
-# 3. あれば rebase (KEYDB.cfg を除外するため filter-branch が必要な場合あり)
+# 3. あれば rebase
 git rebase origin/master
 
 # 4. GitHub にプッシュ
@@ -59,8 +64,6 @@ git push github master
   rm -rf .git/refs/original
   git reflog expire --expire=now --all
   git gc --prune=now
-  # KEYDB.cfg を復元 (filter-branch で消えた場合)
-  # (バックアップから復元するか、手動で再作成)
   git push --force github master
   ```
 
@@ -68,11 +71,11 @@ git push github master
 
 ```bash
 # libbluray
-cd ~/dev/libbluray
+cd <libbluray-source-dir>
 meson compile -C build
 
 # libaacs
-cd ~/dev/libaacs
+cd <libaacs-source-dir>
 autoreconf -vif && ./configure && make
 ```
 
@@ -82,7 +85,5 @@ libbluray のビルドディレクトリ (`build/`) に `build.ninja` がある�
 ninja バイナリを取得して `ninja -C build` でビルド可能。
 
 libaacs は autotools/flex/bison が必要。利用不可の場合は
-pre-built バイナリ (`/tmp/lab/libaacs.so.0`) を使用し、
+pre-built バイナリを使用し、
 Device Key をハードコードした minimal keydbcfg.c で再リンクする。
-EOF
-echo "written"
